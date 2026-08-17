@@ -3,7 +3,10 @@ name = "rfq-edge"
 version = "0.1.0"
 description = "Edge-consistent RFQ responder demo"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+]
 
 [project.optional-dependencies]
 demo = [

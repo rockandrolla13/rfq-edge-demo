@@ -23,11 +23,14 @@ from rfq_edge.synthetic import (
     RfqRequest,
     Side,
     SyntheticBookSpec,
+    SyntheticConfig,
     SyntheticRfq,
     demo_book_spec,
     generate_modeling_book,
     generate_rfq_book,
+    make_synthetic_rfqs,
     to_rfq_request,
+    validate_synthetic_data,
 )
 from rfq_edge.value_model import (
     FairValue,
@@ -52,6 +55,7 @@ __all__ = [
     "SelectionModelParams",
     "Side",
     "SyntheticBookSpec",
+    "SyntheticConfig",
     "SyntheticRfq",
     "ValueModelParams",
     "adverse_selection_bps",
@@ -62,6 +66,7 @@ __all__ = [
     "fill_probability",
     "generate_modeling_book",
     "generate_rfq_book",
+    "make_synthetic_rfqs",
     "maximize_expected_pnl",
     "quoted_price",
     "run_book",
@@ -69,4 +74,5 @@ __all__ = [
     "solve_consistent_edge",
     "to_rfq_request",
     "trading_cost_bps",
+    "validate_synthetic_data",
 ]
