@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from rfq_edge.costs import CostParams, trading_cost_bps
-from rfq_edge.fill_model import FillModelParams, fill_probability
-from rfq_edge.selection_model import SelectionModelParams, adverse_selection_bps
+from rfq_edge.responder_fill import FillModelParams, fill_probability
+from rfq_edge.responder_selection import SelectionModelParams, adverse_selection_bps
 from rfq_edge.synthetic import RfqRequest
 from rfq_edge.responder_value import ValueModelParams
 

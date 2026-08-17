@@ -8,21 +8,21 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
 from sklearn.linear_model import RidgeCV
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from rfq_edge.config import ValueModelConfig
 from rfq_edge.evaluation import compute_forecast_metrics, format_metrics_table
 from rfq_edge.features import (
     VALUE_CATEGORICAL_FEATURES,
     VALUE_NUMERIC_FEATURES,
+    build_feature_preprocessor,
     make_value_features,
     make_value_target,
 )
+from rfq_edge.splits import ChronologicalSplit
+from rfq_edge.splits import chronological_train_test_split as split_by_fraction
 
 
 class ValueForecastKind(str, Enum):
@@ -47,35 +47,33 @@ class FittedValueModel:
     selected_alpha: float
 
 
-@dataclass(frozen=True)
-class ChronologicalSplit:
-    """Chronological train and test partitions."""
-
-    train_df: pd.DataFrame
-    test_df: pd.DataFrame
-    split_index: int
-
-
 def chronological_train_test_split(
     df: pd.DataFrame,
     config: ValueModelConfig,
 ) -> ChronologicalSplit:
-    """Split RFQs by timestamp without shuffling.
+    """Split RFQs chronologically using a :class:`ValueModelConfig`.
 
     :param df: RFQ dataframe containing ``timestamp``.
     :param config: Value-model configuration.
     :return: Chronological train and test partitions.
     """
 
-    ordered = df.sort_values(["timestamp", "rfq_id"]).reset_index(drop=True)
-    split_index = int(len(ordered) * (1.0 - config.chronological_test_fraction))
-    if split_index <= 0 or split_index >= len(ordered):
-        raise ValueError("chronological split produced an empty train or test set")
-    return ChronologicalSplit(
-        train_df=ordered.iloc[:split_index].copy(),
-        test_df=ordered.iloc[split_index:].copy(),
-        split_index=split_index,
-    )
+    return split_by_fraction(df, config.chronological_test_fraction)
+
+
+def value_train_test_split(
+    df: pd.DataFrame,
+    config: ValueModelConfig | None = None,
+) -> ChronologicalSplit:
+    """Split RFQs chronologically for V0 evaluation.
+
+    :param df: RFQ dataframe.
+    :param config: Value-model configuration.
+    :return: Chronological train and test partitions.
+    """
+
+    model_config = config or ValueModelConfig()
+    return split_by_fraction(df, model_config.chronological_test_fraction)
 
 
 def fit_value_model(
@@ -229,30 +227,10 @@ def make_chronological_oof_v0(
 
 
 def _build_ridge_pipeline(config: ValueModelConfig) -> Pipeline:
-    numeric_pipeline = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler()),
-        ]
-    )
-    categorical_pipeline = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            (
-                "encoder",
-                OneHotEncoder(
-                    handle_unknown="ignore",
-                    min_frequency=config.minimum_category_frequency,
-                    sparse_output=False,
-                ),
-            ),
-        ]
-    )
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ("numeric", numeric_pipeline, list(VALUE_NUMERIC_FEATURES)),
-            ("categorical", categorical_pipeline, list(VALUE_CATEGORICAL_FEATURES)),
-        ]
+    preprocessor = build_feature_preprocessor(
+        numeric_features=VALUE_NUMERIC_FEATURES,
+        categorical_features=VALUE_CATEGORICAL_FEATURES,
+        minimum_category_frequency=config.minimum_category_frequency,
     )
     chronological_cv = TimeSeriesSplit(n_splits=config.number_of_oof_splits)
     model = RidgeCV(

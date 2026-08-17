@@ -1,13 +1,17 @@
 """Public interface for the edge-consistent RFQ responder demo."""
 
-from rfq_edge.config import ValueModelConfig
+from rfq_edge.config import FillModelConfig, SelectionModelConfig, ValueModelConfig
 from rfq_edge.evaluation import compute_forecast_metrics, format_metrics_table
 from rfq_edge.features import (
+    FILL_FEATURE_COLUMNS,
     VALUE_CATEGORICAL_FEATURES,
     VALUE_FEATURE_COLUMNS,
     VALUE_NUMERIC_FEATURES,
+    make_fill_features,
+    make_selection_features,
     make_value_features,
     make_value_target,
+    quote_aggressiveness,
 )
 from rfq_edge.responder_value import (
     FairValue,
@@ -15,9 +19,19 @@ from rfq_edge.responder_value import (
     estimate_fair_value,
     quoted_price,
 )
+from rfq_edge.responder_fill import FillModelParams, fill_probability
+from rfq_edge.responder_selection import SelectionModelParams, adverse_selection_bps
 from rfq_edge.schema import validate_rfq_schema
+from rfq_edge.splits import ChronologicalSplit, chronological_train_test_split
 from rfq_edge.costs import CostParams, trading_cost_bps
-from rfq_edge.fill_model import FillModelParams, fill_probability
+from rfq_edge.fill_model import (
+    FittedFillModel,
+    evaluate_fill_model,
+    fill_train_test_split,
+    fit_fill_model,
+    format_fill_metrics,
+    predict_win_probability,
+)
 from rfq_edge.objective import EdgeComponents, ResponderModels, evaluate_quote
 from rfq_edge.optimizer import (
     OptimizerParams,
@@ -32,7 +46,17 @@ from rfq_edge.pipeline import (
     run_book,
     run_responder,
 )
-from rfq_edge.selection_model import SelectionModelParams, adverse_selection_bps
+from rfq_edge.selection_model import (
+    FittedSelectionModel,
+    V0_OOF_COLUMN,
+    evaluate_selection_model,
+    fit_selection_model,
+    format_selection_metrics,
+    make_selection_target,
+    predict_conditional_mark,
+    predict_selection,
+    selection_train_test_split,
+)
 from rfq_edge.synthetic import (
     BondInfo,
     IssuerInfo,
@@ -51,7 +75,7 @@ from rfq_edge.synthetic import (
 from rfq_edge.value_model import (
     FittedValueModel,
     ValueForecastKind,
-    chronological_train_test_split,
+    chronological_train_test_split as value_chronological_split,
     evaluate_value_models,
     fit_value_model,
     make_chronological_oof_v0,
@@ -61,10 +85,14 @@ from rfq_edge.value_model import (
 
 __all__ = [
     "BondInfo",
+    "ChronologicalSplit",
     "CostParams",
     "EdgeComponents",
     "FairValue",
+    "FillModelConfig",
     "FillModelParams",
+    "FittedFillModel",
+    "FittedSelectionModel",
     "FittedValueModel",
     "IssuerInfo",
     "OptimizerParams",
@@ -73,14 +101,17 @@ __all__ = [
     "ResponderDecision",
     "ResponderModels",
     "RfqRequest",
+    "SelectionModelConfig",
     "SelectionModelParams",
     "Side",
     "SyntheticBookSpec",
     "SyntheticConfig",
     "SyntheticRfq",
+    "V0_OOF_COLUMN",
     "VALUE_CATEGORICAL_FEATURES",
     "VALUE_FEATURE_COLUMNS",
     "VALUE_NUMERIC_FEATURES",
+    "FILL_FEATURE_COLUMNS",
     "ValueForecastKind",
     "ValueModelConfig",
     "ValueModelParams",
@@ -90,26 +121,45 @@ __all__ = [
     "default_config",
     "demo_book_spec",
     "estimate_fair_value",
+    "evaluate_fill_model",
     "evaluate_quote",
+    "evaluate_selection_model",
     "evaluate_value_models",
     "fill_probability",
+    "fill_train_test_split",
+    "fit_fill_model",
+    "fit_selection_model",
     "fit_value_model",
+    "format_fill_metrics",
     "format_metrics_table",
+    "format_selection_metrics",
     "generate_modeling_book",
     "generate_rfq_book",
     "make_chronological_oof_v0",
+    "make_fill_features",
+    "make_selection_features",
+    "make_selection_target",
     "make_synthetic_rfqs",
     "make_value_features",
     "make_value_target",
     "maximize_expected_pnl",
+    "predict_conditional_mark",
+    "predict_selection",
     "predict_v0",
     "predict_value_residual",
+    "predict_win_probability",
+    "quote_aggressiveness",
     "quoted_price",
     "run_book",
     "run_responder",
+    "selection_train_test_split",
     "solve_consistent_edge",
     "to_rfq_request",
     "trading_cost_bps",
     "validate_rfq_schema",
     "validate_synthetic_data",
+    "value_chronological_split",
 ]
+
+# Backward-compatible alias used by value-model tests and notebooks.
+chronological_train_test_split = value_chronological_split

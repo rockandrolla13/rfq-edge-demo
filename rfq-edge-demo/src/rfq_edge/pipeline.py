@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from rfq_edge.costs import CostParams
-from rfq_edge.fill_model import FillModelParams
+from rfq_edge.responder_fill import FillModelParams
 from rfq_edge.objective import ResponderModels
 from rfq_edge.optimizer import (
     OptimizerParams,
@@ -13,7 +13,7 @@ from rfq_edge.optimizer import (
     maximize_expected_pnl,
     solve_consistent_edge,
 )
-from rfq_edge.selection_model import SelectionModelParams
+from rfq_edge.responder_selection import SelectionModelParams
 from rfq_edge.synthetic import RfqRequest
 from rfq_edge.responder_value import (
     FairValue,
