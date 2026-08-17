@@ -1,7 +1,7 @@
 """Public synthetic-book behavior."""
 
-from rfq_edge import demo_book_spec, generate_rfq_book
-from rfq_edge.synthetic import SyntheticBookSpec
+from rfq_edge import demo_book_spec, generate_rfq_book, to_rfq_request
+from rfq_edge.synthetic import Side, SyntheticBookSpec
 
 
 def test_generate_rfq_book_is_reproducible() -> None:
@@ -12,22 +12,43 @@ def test_generate_rfq_book_is_reproducible() -> None:
     assert len(first) == spec.n_rfqs
 
 
-def test_generate_rfq_book_draws_positive_economics() -> None:
+def test_generate_rfq_book_contains_required_fields() -> None:
     book = generate_rfq_book(demo_book_spec())
-    for request in book:
-        assert request.quantity > 0.0
-        assert request.mid_price > 0.0
-        assert request.volatility > 0.0
-        assert request.time_to_hedge > 0.0
-        assert request.competition_count >= 1
+    for record in book:
+        assert record.rfq_id
+        assert record.bond.bond_id
+        assert record.bond.issuer.issuer_name
+        assert record.side in (Side.BUY, Side.SELL)
+        assert record.cp_plus_mid > 0.0
+        assert record.internal_mid > 0.0
+        assert record.quote > 0.0
+        assert isinstance(record.quote_won, bool)
+        assert record.t5_clean_mark > 0.0
+
+
+def test_to_rfq_request_is_reproducible() -> None:
+    spec = demo_book_spec()
+    record = generate_rfq_book(spec)[0]
+    first = to_rfq_request(record, spec, 0)
+    second = to_rfq_request(record, spec, 0)
+    assert first == second
+    assert first.mid_price == record.internal_mid
+    assert first.side == record.side
 
 
 def test_generate_rfq_book_rejects_empty_books() -> None:
     spec = SyntheticBookSpec(
         n_rfqs=0,
         seed=1,
-        mid_mean=100.0,
-        mid_std=1.0,
+        cp_plus_mid_mean=100.0,
+        cp_plus_mid_std=1.0,
+        internal_mid_noise_bps=1.0,
+        quote_edge_min_bps=1.0,
+        quote_edge_max_bps=5.0,
+        t5_daily_vol_bps=6.0,
+        win_intercept=1.0,
+        win_edge_coef=0.2,
+        selection_bps_on_win=2.0,
         log_quantity_mean=7.0,
         log_quantity_std=0.2,
         vol_min=0.1,

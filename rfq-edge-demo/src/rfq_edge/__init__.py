@@ -18,11 +18,16 @@ from rfq_edge.pipeline import (
 )
 from rfq_edge.selection_model import SelectionModelParams, adverse_selection_bps
 from rfq_edge.synthetic import (
+    BondInfo,
+    IssuerInfo,
     RfqRequest,
     Side,
     SyntheticBookSpec,
+    SyntheticRfq,
     demo_book_spec,
+    generate_modeling_book,
     generate_rfq_book,
+    to_rfq_request,
 )
 from rfq_edge.value_model import (
     FairValue,
@@ -32,10 +37,12 @@ from rfq_edge.value_model import (
 )
 
 __all__ = [
+    "BondInfo",
     "CostParams",
     "EdgeComponents",
     "FairValue",
     "FillModelParams",
+    "IssuerInfo",
     "OptimizerParams",
     "PipelineConfig",
     "QuoteSolution",
@@ -45,6 +52,7 @@ __all__ = [
     "SelectionModelParams",
     "Side",
     "SyntheticBookSpec",
+    "SyntheticRfq",
     "ValueModelParams",
     "adverse_selection_bps",
     "default_config",
@@ -52,11 +60,13 @@ __all__ = [
     "estimate_fair_value",
     "evaluate_quote",
     "fill_probability",
+    "generate_modeling_book",
     "generate_rfq_book",
     "maximize_expected_pnl",
     "quoted_price",
     "run_book",
     "run_responder",
     "solve_consistent_edge",
+    "to_rfq_request",
     "trading_cost_bps",
 ]
