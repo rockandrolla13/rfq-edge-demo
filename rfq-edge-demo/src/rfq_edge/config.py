@@ -97,3 +97,43 @@ class SelectionModelConfig:
 def _validate_test_fraction(test_fraction: float) -> None:
     if not 0.0 < test_fraction < 1.0:
         raise ValueError("chronological_test_fraction must be between 0 and 1")
+
+
+@dataclass(frozen=True)
+class OptimizerConfig:
+    """Configuration for quote-grid search over candidate clean prices.
+
+    :param min_aggressiveness: Lower bound on normalized aggressiveness z.
+    :param max_aggressiveness: Upper bound on normalized aggressiveness z.
+    :param aggressiveness_step: Grid step in aggressiveness units.
+    :param hedge_horizon_years: Expected hedge horizon used in cost calculation.
+    :param transaction_bps: Quote-independent transaction cost in bps of mid.
+    :param risk_aversion: Scales volatility and hedge-horizon risk cost.
+    :param inventory_value_per_unit: Price-point value per unit of inventory reduced.
+    :param inventory_penalty_per_unit: Price-point penalty per unit of inventory added.
+    """
+
+    min_aggressiveness: float = -1.5
+    max_aggressiveness: float = 1.5
+    aggressiveness_step: float = 0.25
+    hedge_horizon_years: float = 5.0 / 252.0
+    transaction_bps: float = 0.8
+    risk_aversion: float = 8.0
+    inventory_value_per_unit: float = 0.000015
+    inventory_penalty_per_unit: float = 0.000015
+
+    def __post_init__(self) -> None:
+        if self.max_aggressiveness <= self.min_aggressiveness:
+            raise ValueError("max_aggressiveness must exceed min_aggressiveness")
+        if self.aggressiveness_step <= 0.0:
+            raise ValueError("aggressiveness_step must be positive")
+        if self.hedge_horizon_years <= 0.0:
+            raise ValueError("hedge_horizon_years must be positive")
+        if self.transaction_bps < 0.0:
+            raise ValueError("transaction_bps must be non-negative")
+        if self.risk_aversion < 0.0:
+            raise ValueError("risk_aversion must be non-negative")
+        if self.inventory_value_per_unit < 0.0:
+            raise ValueError("inventory_value_per_unit must be non-negative")
+        if self.inventory_penalty_per_unit < 0.0:
+            raise ValueError("inventory_penalty_per_unit must be non-negative")

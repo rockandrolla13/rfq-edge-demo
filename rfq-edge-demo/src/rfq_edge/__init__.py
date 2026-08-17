@@ -1,6 +1,11 @@
 """Public interface for the edge-consistent RFQ responder demo."""
 
-from rfq_edge.config import FillModelConfig, SelectionModelConfig, ValueModelConfig
+from rfq_edge.config import (
+    FillModelConfig,
+    OptimizerConfig,
+    SelectionModelConfig,
+    ValueModelConfig,
+)
 from rfq_edge.evaluation import compute_forecast_metrics, format_metrics_table
 from rfq_edge.features import (
     FILL_FEATURE_COLUMNS,
@@ -21,9 +26,15 @@ from rfq_edge.responder_value import (
 )
 from rfq_edge.responder_fill import FillModelParams, fill_probability
 from rfq_edge.responder_selection import SelectionModelParams, adverse_selection_bps
+from rfq_edge.responder_optimizer import (
+    OptimizerParams,
+    QuoteSolution,
+    maximize_expected_pnl,
+    solve_consistent_edge,
+)
 from rfq_edge.schema import validate_rfq_schema
 from rfq_edge.splits import ChronologicalSplit, chronological_train_test_split
-from rfq_edge.costs import CostParams, trading_cost_bps
+from rfq_edge.costs import CostParams, points_to_cents, rfq_trading_cost_points, trading_cost_bps
 from rfq_edge.fill_model import (
     FittedFillModel,
     evaluate_fill_model,
@@ -34,10 +45,15 @@ from rfq_edge.fill_model import (
 )
 from rfq_edge.objective import EdgeComponents, ResponderModels, evaluate_quote
 from rfq_edge.optimizer import (
-    OptimizerParams,
-    QuoteSolution,
-    maximize_expected_pnl,
-    solve_consistent_edge,
+    FittedQuoteModels,
+    QuoteDecision,
+    aggressiveness_grid,
+    demonstrate_quote_optimizer,
+    evaluate_quote_grid,
+    fit_quote_models,
+    format_quote_table,
+    optimize_quote,
+    quote_from_aggressiveness,
 )
 from rfq_edge.pipeline import (
     PipelineConfig,
@@ -92,11 +108,14 @@ __all__ = [
     "FillModelConfig",
     "FillModelParams",
     "FittedFillModel",
+    "FittedQuoteModels",
     "FittedSelectionModel",
     "FittedValueModel",
     "IssuerInfo",
+    "OptimizerConfig",
     "OptimizerParams",
     "PipelineConfig",
+    "QuoteDecision",
     "QuoteSolution",
     "ResponderDecision",
     "ResponderModels",
@@ -116,22 +135,27 @@ __all__ = [
     "ValueModelConfig",
     "ValueModelParams",
     "adverse_selection_bps",
+    "aggressiveness_grid",
     "chronological_train_test_split",
     "compute_forecast_metrics",
     "default_config",
+    "demonstrate_quote_optimizer",
     "demo_book_spec",
     "estimate_fair_value",
     "evaluate_fill_model",
     "evaluate_quote",
+    "evaluate_quote_grid",
     "evaluate_selection_model",
     "evaluate_value_models",
     "fill_probability",
     "fill_train_test_split",
     "fit_fill_model",
+    "fit_quote_models",
     "fit_selection_model",
     "fit_value_model",
     "format_fill_metrics",
     "format_metrics_table",
+    "format_quote_table",
     "format_selection_metrics",
     "generate_modeling_book",
     "generate_rfq_book",
@@ -143,13 +167,17 @@ __all__ = [
     "make_value_features",
     "make_value_target",
     "maximize_expected_pnl",
+    "optimize_quote",
+    "points_to_cents",
     "predict_conditional_mark",
     "predict_selection",
     "predict_v0",
     "predict_value_residual",
     "predict_win_probability",
     "quote_aggressiveness",
+    "quote_from_aggressiveness",
     "quoted_price",
+    "rfq_trading_cost_points",
     "run_book",
     "run_responder",
     "selection_train_test_split",
@@ -161,5 +189,4 @@ __all__ = [
     "value_chronological_split",
 ]
 
-# Backward-compatible alias used by value-model tests and notebooks.
 chronological_train_test_split = value_chronological_split

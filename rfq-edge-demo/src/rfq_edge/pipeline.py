@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from rfq_edge.costs import CostParams
 from rfq_edge.responder_fill import FillModelParams
 from rfq_edge.objective import ResponderModels
-from rfq_edge.optimizer import (
+from rfq_edge.responder_optimizer import (
     OptimizerParams,
     QuoteSolution,
     maximize_expected_pnl,

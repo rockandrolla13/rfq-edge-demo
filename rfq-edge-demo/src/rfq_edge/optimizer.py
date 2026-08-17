@@ -1,157 +1,300 @@
-"""Quote search: edge-consistent fixed point and expected-PnL maximizer."""
+"""Quote optimizer combining fill, selection, value, and cost models."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
-from rfq_edge.objective import EdgeComponents, ResponderModels, evaluate_quote
-from rfq_edge.synthetic import RfqRequest
+import numpy as np
+import pandas as pd
+
+from rfq_edge.config import (
+    FillModelConfig,
+    OptimizerConfig,
+    SelectionModelConfig,
+    ValueModelConfig,
+)
+from rfq_edge.costs import (
+    points_to_cents,
+    rfq_inventory_value_points,
+    rfq_trading_cost_points,
+)
+from rfq_edge.fill_model import FittedFillModel, fit_fill_model, predict_win_probability
+from rfq_edge.selection_model import (
+    FittedSelectionModel,
+    V0_OOF_COLUMN,
+    fit_selection_model,
+    predict_selection,
+)
+from rfq_edge.value_model import FittedValueModel, fit_value_model, predict_v0
 
 
 @dataclass(frozen=True)
-class OptimizerParams:
-    """One-dimensional search bounds over quoted edge.
+class FittedQuoteModels:
+    """Calibrated models used by the quote optimizer.
 
-    :param min_edge_bps: Inclusive lower bound. Must be non-negative.
-    :param max_edge_bps: Inclusive upper bound. Must exceed the lower bound.
-    :param step_bps: Grid step used by the expected-PnL maximizer.
+    :param fill_model: Win-probability model p(win | q, X).
+    :param selection_model: Adverse-selection model A(q, X) on fills.
+    :param value_model: Unconditional future-value model V0.
+    :param v0_column: Optional precomputed V0 column, e.g. out-of-fold values.
     """
 
-    min_edge_bps: float
-    max_edge_bps: float
-    step_bps: float
+    fill_model: FittedFillModel
+    selection_model: FittedSelectionModel
+    value_model: FittedValueModel
+    v0_column: str | None = None
 
 
 @dataclass(frozen=True)
-class QuoteSolution:
-    """A selected quote and its objective decomposition.
+class QuoteDecision:
+    """Selected quote or a decline when every candidate has J <= 0.
 
-    :param rule: Name of the rule that produced the quote.
-    :param components: Evaluated fill, selection, cost, and PnL terms.
+    :param accepted: Whether a quote was chosen.
+    :param quote: Selected clean quote, if accepted.
+    :param expected_value_cents: Expected value of the selected quote in cents.
+    :param candidate_table: Grid evaluation for all scanned quotes.
     """
 
-    rule: str
-    components: EdgeComponents
+    accepted: bool
+    quote: float | None
+    expected_value_cents: float
+    candidate_table: pd.DataFrame
 
 
-def solve_consistent_edge(
-    request: RfqRequest,
-    models: ResponderModels,
-    search: OptimizerParams,
-) -> QuoteSolution:
-    """Solve quoted_edge = selection + costs + target_edge.
+def fit_quote_models(
+    train_df: pd.DataFrame,
+    train_fills_df: pd.DataFrame,
+    value_config: ValueModelConfig | None = None,
+    fill_config: FillModelConfig | None = None,
+    selection_config: SelectionModelConfig | None = None,
+    v0_column: str = V0_OOF_COLUMN,
+) -> FittedQuoteModels:
+    """Fit value, fill, and selection models on chronological training data.
 
-    The consistent quote earns exactly the target net edge if filled. Selection
-    falls as the quote widens, so the gap is monotone and the root is unique
-    when it exists inside the search bounds.
-
-    :param request: Incoming RFQ.
-    :param models: Calibrated responder models.
-    :param search: Bounds for the one-dimensional solve.
-    :return: Edge-consistent quote and its components.
-    :raises ValueError: If bounds are invalid or no root exists inside them.
+    :param train_df: All chronological training RFQs.
+    :param train_fills_df: Won training fills with out-of-fold V0.
+    :param value_config: Value-model configuration.
+    :param fill_config: Fill-model configuration.
+    :param selection_config: Selection-model configuration.
+    :param v0_column: Column containing out-of-fold V0 for selection fit.
+    :return: Bundle of fitted models for quote optimization.
     """
 
-    _validate_search(search)
-    edge_bps = _bisect_consistent_edge(request, models, search)
-    components = evaluate_quote(request, models, edge_bps)
-    return QuoteSolution(rule="edge_consistent", components=components)
+    value_model = fit_value_model(train_df, value_config)
+    fill_model = fit_fill_model(train_df, fill_config)
+    selection_model = fit_selection_model(
+        train_fills_df,
+        selection_config,
+        v0_column=v0_column,
+    )
+    return FittedQuoteModels(
+        fill_model=fill_model,
+        selection_model=selection_model,
+        value_model=value_model,
+        v0_column=v0_column,
+    )
 
 
-def maximize_expected_pnl(
-    request: RfqRequest,
-    models: ResponderModels,
-    search: OptimizerParams,
-) -> QuoteSolution:
-    """Pick the grid edge with the highest expected PnL.
+def aggressiveness_grid(config: OptimizerConfig) -> np.ndarray:
+    """Return the normalized aggressiveness grid for quote search.
 
-    :param request: Incoming RFQ.
-    :param models: Calibrated responder models.
-    :param search: Grid bounds and step.
-    :return: Expected-PnL maximizing quote and its components.
-    :raises ValueError: If the search grid is empty or invalid.
+    :param config: Optimizer configuration.
+    :return: One-dimensional aggressiveness array.
     """
 
-    _validate_search(search)
-    best_components = _scan_expected_pnl_grid(request, models, search)
-    return QuoteSolution(rule="expected_pnl", components=best_components)
+    values = np.arange(
+        config.min_aggressiveness,
+        config.max_aggressiveness + config.aggressiveness_step / 2.0,
+        config.aggressiveness_step,
+    )
+    if values.size == 0:
+        raise ValueError("aggressiveness grid is empty")
+    return values
 
 
-def _validate_search(search: OptimizerParams) -> None:
-    if search.min_edge_bps < 0.0:
-        raise ValueError("min_edge_bps must be non-negative")
-    if search.max_edge_bps <= search.min_edge_bps:
-        raise ValueError("max_edge_bps must exceed min_edge_bps")
-    if search.step_bps <= 0.0:
-        raise ValueError("step_bps must be positive")
+def quote_from_aggressiveness(row: pd.Series, aggressiveness: float) -> float:
+    """Convert normalized aggressiveness into a clean quote.
+
+    :param row: Single RFQ row.
+    :param aggressiveness: Normalized aggressiveness z.
+    :return: Candidate clean quote in price points.
+    """
+
+    return float(
+        row["cp_plus"]
+        + float(row["side_sign"]) * aggressiveness * float(row["market_width"])
+    )
 
 
-def _bisect_consistent_edge(
-    request: RfqRequest,
-    models: ResponderModels,
-    search: OptimizerParams,
-) -> float:
-    low = search.min_edge_bps
-    high = search.max_edge_bps
-    gap_low = _consistency_gap(request, models, low)
-    gap_high = _consistency_gap(request, models, high)
-    if gap_low > 0.0:
-        raise ValueError("consistent edge is below min_edge_bps")
-    if gap_high < 0.0:
-        raise ValueError("consistent edge is above max_edge_bps")
-    return _bisect_root(request, models, low, high)
+def resolve_v0(row_frame: pd.DataFrame, models: FittedQuoteModels) -> pd.Series:
+    """Resolve unconditional V0 for each RFQ row.
+
+    Out-of-fold V0 is preferred when available; remaining rows fall back to the
+    fitted value model so quote optimization can proceed at inference time.
+
+    :param row_frame: RFQ dataframe.
+    :param models: Fitted quote models.
+    :return: V0 series aligned to ``row_frame.index``.
+    """
+
+    predicted_v0 = predict_v0(models.value_model, row_frame)
+    if models.v0_column is None or models.v0_column not in row_frame.columns:
+        return predicted_v0
+    v0 = row_frame[models.v0_column].astype(float)
+    missing = v0.isna()
+    if missing.any():
+        v0 = v0.copy()
+        v0.loc[missing] = predicted_v0.loc[missing]
+    return v0
 
 
-def _consistency_gap(
-    request: RfqRequest,
-    models: ResponderModels,
-    edge_bps: float,
-) -> float:
-    components = evaluate_quote(request, models, edge_bps)
-    return components.quoted_edge_bps - components.required_edge_bps
+def evaluate_quote_grid(
+    rfq: pd.DataFrame,
+    models: FittedQuoteModels,
+    config: OptimizerConfig | None = None,
+) -> pd.DataFrame:
+    """Evaluate J(q, X) over a grid of candidate quotes.
+
+    For each quote the function computes:
+
+    * p(q, X) from the fill model;
+    * A(q, X) from the selection model;
+    * m(q, X) = V0 - side_sign * A(q, X);
+    * e(q, X) = side_sign * (m(q, X) - q);
+    * J(q, X) = p(q, X) * [e(q, X) - cost + inventory value].
+
+    :param rfq: Single-row RFQ dataframe.
+    :param models: Fitted quote models.
+    :param config: Optimizer configuration.
+    :return: Candidate quote comparison table.
+    :raises ValueError: If ``rfq`` does not contain exactly one row.
+    """
+
+    if len(rfq) != 1:
+        raise ValueError("evaluate_quote_grid expects exactly one RFQ row")
+    optimizer_config = config or OptimizerConfig()
+    row = rfq.iloc[0]
+    v0 = float(resolve_v0(rfq, models).iloc[0])
+    cost_points = rfq_trading_cost_points(row, optimizer_config)
+    inventory_value_points = rfq_inventory_value_points(row, optimizer_config)
+    cost_cents = points_to_cents(cost_points)
+    inventory_value_cents = points_to_cents(inventory_value_points)
+
+    rows: list[dict[str, float]] = []
+    for aggressiveness in aggressiveness_grid(optimizer_config):
+        quote = quote_from_aggressiveness(row, float(aggressiveness))
+        quote_series = pd.Series([quote], index=rfq.index)
+        p_win = float(predict_win_probability(models.fill_model, rfq, quote=quote_series).iloc[0])
+        if not np.isfinite(p_win):
+            p_win = 0.0
+        selection = float(predict_selection(models.selection_model, rfq, quote=quote_series).iloc[0])
+        if not np.isfinite(selection):
+            selection = 0.0
+        post_win_value = v0 - float(row["side_sign"]) * selection
+        clean_edge_points = float(row["side_sign"]) * (post_win_value - quote)
+        clean_edge_cents = points_to_cents(clean_edge_points)
+        expected_value_cents = p_win * (
+            clean_edge_cents - cost_cents + inventory_value_cents
+        )
+        rows.append(
+            {
+                "quote": quote,
+                "aggressiveness": float(aggressiveness),
+                "p_win": p_win,
+                "post_win_value": post_win_value,
+                "selection": selection,
+                "clean_edge_cents": clean_edge_cents,
+                "cost_cents": cost_cents,
+                "inventory_value_cents": inventory_value_cents,
+                "expected_value_cents": expected_value_cents,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
-def _bisect_root(
-    request: RfqRequest,
-    models: ResponderModels,
-    low: float,
-    high: float,
-) -> float:
-    current_low = low
-    current_high = high
-    midpoint = current_low
-    for _ in range(80):
-        midpoint = 0.5 * (current_low + current_high)
-        gap = _consistency_gap(request, models, midpoint)
-        if abs(gap) <= 1e-8:
-            return midpoint
-        if gap < 0.0:
-            current_low = midpoint
-        else:
-            current_high = midpoint
-    return midpoint
+def optimize_quote(
+    rfq: pd.DataFrame,
+    models: FittedQuoteModels,
+    config: OptimizerConfig | None = None,
+) -> QuoteDecision:
+    """Select the quote with the highest expected value, or decline.
+
+    :param rfq: Single-row RFQ dataframe.
+    :param models: Fitted quote models.
+    :param config: Optimizer configuration.
+    :return: Accepted quote decision or a decline.
+    """
+
+    table = evaluate_quote_grid(rfq, models, config)
+    if table["expected_value_cents"].notna().any():
+        best = table.loc[table["expected_value_cents"].idxmax()]
+    else:
+        best = table.iloc[0]
+    best_expected_value = float(best["expected_value_cents"])
+    if best_expected_value <= 0.0:
+        return QuoteDecision(
+            accepted=False,
+            quote=None,
+            expected_value_cents=best_expected_value,
+            candidate_table=table,
+        )
+    return QuoteDecision(
+        accepted=True,
+        quote=float(best["quote"]),
+        expected_value_cents=best_expected_value,
+        candidate_table=table,
+    )
 
 
-def _scan_expected_pnl_grid(
-    request: RfqRequest,
-    models: ResponderModels,
-    search: OptimizerParams,
-) -> EdgeComponents:
-    grid = _edge_grid(search)
-    best = evaluate_quote(request, models, grid[0])
-    for edge_bps in grid[1:]:
-        candidate = evaluate_quote(request, models, edge_bps)
-        if candidate.expected_pnl > best.expected_pnl:
-            best = candidate
-    return best
+def format_quote_table(table: pd.DataFrame) -> str:
+    """Render the candidate quote comparison table.
+
+    :param table: Output from :func:`evaluate_quote_grid`.
+    :return: Human-readable table string.
+    """
+
+    headers = [
+        "Quote",
+        "Win probability",
+        "Post-win value",
+        "Clean edge",
+        "Cost",
+        "Expected value",
+    ]
+    lines = ["  ".join(f"{header:<16}" for header in headers)]
+    for _, row in table.iterrows():
+        lines.append(
+            "  ".join(
+                [
+                    f"{row['quote']:<16.2f}",
+                    f"{row['p_win'] * 100:.0f}%".ljust(16),
+                    f"{row['post_win_value']:<16.2f}",
+                    f"{row['clean_edge_cents']:<16.0f}c",
+                    f"{row['cost_cents']:<16.1f}c",
+                    f"{row['expected_value_cents']:<16.1f}c",
+                ]
+            )
+        )
+    return "\n".join(lines)
 
 
-def _edge_grid(search: OptimizerParams) -> tuple[float, ...]:
-    edges: list[float] = []
-    current = search.min_edge_bps
-    while current <= search.max_edge_bps + 1e-12:
-        edges.append(round(current, 10))
-        current += search.step_bps
-    if not edges:
-        raise ValueError("edge grid is empty")
-    return tuple(edges)
+def demonstrate_quote_optimizer(
+    rfq: pd.DataFrame,
+    models: FittedQuoteModels,
+    config: OptimizerConfig | None = None,
+) -> dict[str, Any]:
+    """Evaluate and optimize one RFQ, returning table and decision metadata.
+
+    :param rfq: Single-row RFQ dataframe.
+    :param models: Fitted quote models.
+    :param config: Optimizer configuration.
+    :return: Dictionary with table text and optimization decision.
+    """
+
+    table = evaluate_quote_grid(rfq, models, config)
+    decision = optimize_quote(rfq, models, config)
+    return {
+        "table": table,
+        "table_text": format_quote_table(table),
+        "decision": decision,
+    }
