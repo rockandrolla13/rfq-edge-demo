@@ -8,7 +8,7 @@ from rfq_edge.costs import CostParams, trading_cost_bps
 from rfq_edge.fill_model import FillModelParams, fill_probability
 from rfq_edge.selection_model import SelectionModelParams, adverse_selection_bps
 from rfq_edge.synthetic import RfqRequest
-from rfq_edge.value_model import ValueModelParams
+from rfq_edge.responder_value import ValueModelParams
 
 
 BPS_SCALE = 10_000.0

@@ -15,7 +15,7 @@ from rfq_edge.optimizer import (
 )
 from rfq_edge.selection_model import SelectionModelParams
 from rfq_edge.synthetic import RfqRequest
-from rfq_edge.value_model import (
+from rfq_edge.responder_value import (
     FairValue,
     ValueModelParams,
     estimate_fair_value,
