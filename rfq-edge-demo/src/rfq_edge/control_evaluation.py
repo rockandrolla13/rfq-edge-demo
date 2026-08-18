@@ -20,7 +20,6 @@ import pandas as pd
 from rfq_edge.control_config import (
     ControlMarketConfig,
     EpisodeConfig,
-    RegimeParameters,
     with_overrides,
 )
 from rfq_edge.control_pipeline import (

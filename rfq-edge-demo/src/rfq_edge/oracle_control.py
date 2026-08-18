@@ -15,7 +15,6 @@ perturbing hidden fields does not change fitted-policy actions.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 
 import numpy as np
