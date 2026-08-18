@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Edge-consistent RFQ responder demo"
 requires-python = ">=3.11"
 dependencies = [
+    "matplotlib>=3.8",
     "numpy>=1.26",
     "pandas>=2.1",
     "scikit-learn>=1.4",
@@ -11,7 +12,10 @@ dependencies = [
 
 [project.optional-dependencies]
 demo = [
-    "matplotlib>=3.8",
+    "ipykernel>=6.29",
+    "jupyter_client>=8.6",
+    "nbconvert>=7.16",
+    "nbformat>=5.10",
 ]
 dev = [
     "pytest>=8.0",

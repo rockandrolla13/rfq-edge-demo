@@ -31,6 +31,16 @@ VENUES: tuple[str, ...] = ("tradeweb", "marketaxess", "bloomberg_rfq")
 SECONDS_PER_DAY = 86_400
 FIRST_TRADE_STALENESS_SECONDS = 30.0 * SECONDS_PER_DAY
 
+# Data-generating-process constants shared with the synthetic oracle so that
+# diagnostics stay consistent with the simulation without duplicating numbers.
+FUTURE_NOISE_SCALE = 0.20
+CLIENT_INFO_NOISE_STD = 0.05
+MARKOUT_SCALE_BY_REGIME: dict[str, float] = {
+    "calm": 0.85,
+    "normal": 1.00,
+    "volatile": 1.35,
+}
+
 OBSERVABLE_COLUMNS: tuple[str, ...] = (
     "rfq_id",
     "timestamp",
@@ -70,6 +80,7 @@ LATENT_COLUMNS: tuple[str, ...] = (
     "latent_mu_value",
     "latent_future_residual",
     "latent_client_information",
+    "latent_information_strength",
     "latent_aggressiveness",
     "latent_p_win",
 )
@@ -764,11 +775,11 @@ def _simulate_rfq_economics(
     # Volatile regimes carry heavier markout tails, not only wider quoted markets.
     markout_scale = np.select(
         [regime == "calm", regime == "volatile"],
-        [0.85, 1.35],
-        default=1.0,
+        [MARKOUT_SCALE_BY_REGIME["calm"], MARKOUT_SCALE_BY_REGIME["volatile"]],
+        default=MARKOUT_SCALE_BY_REGIME["normal"],
     )
     future_noise = (
-        _student_t_draw(rng, config.n_rfqs, config.student_t_df, scale=0.20)
+        _student_t_draw(rng, config.n_rfqs, config.student_t_df, scale=FUTURE_NOISE_SCALE)
         * markout_scale
     )
     future_residual = mu_value + future_noise
@@ -785,7 +796,9 @@ def _simulate_rfq_economics(
     internal_mid = cp_plus + internal_signal
 
     info_strength = _information_strength(rfq_state, market)
-    client_information = info_strength * future_residual + rng.normal(0.0, 0.05, size=config.n_rfqs)
+    client_information = info_strength * future_residual + rng.normal(
+        0.0, CLIENT_INFO_NOISE_STD, size=config.n_rfqs
+    )
     standardized_client_information = _standardize(client_information)
 
     internal_alpha = internal_signal - mu_value * 0.35
@@ -858,6 +871,7 @@ def _simulate_rfq_economics(
         "latent_mu_value": mu_value,
         "latent_future_residual": future_residual,
         "latent_client_information": client_information,
+        "latent_information_strength": info_strength,
         "latent_aggressiveness": aggressiveness,
         "latent_p_win": p_win,
     }

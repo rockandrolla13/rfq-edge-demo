@@ -114,6 +114,9 @@ class OptimizerConfig:
     :param inventory_penalty_per_unit: Price-point penalty per unit of inventory added.
     :param axe_bonus_multiplier: Extra inventory value multiplier on axed RFQs.
     :param support_quantile: Tail quantile trimmed from the trained quote support.
+    :param selection_haircut: Multiplier applied to predicted adverse selection
+        by the edge-consistent responder. 1.0 uses the model as fitted; values
+        above 1.0 are conservative; 0.0 disables the correction entirely.
     """
 
     min_aggressiveness: float = -1.5
@@ -127,6 +130,7 @@ class OptimizerConfig:
     inventory_penalty_per_unit: float = 0.000015
     axe_bonus_multiplier: float = 0.5
     support_quantile: float = 0.01
+    selection_haircut: float = 1.0
 
     def __post_init__(self) -> None:
         if self.max_aggressiveness <= self.min_aggressiveness:
@@ -149,3 +153,5 @@ class OptimizerConfig:
             raise ValueError("axe_bonus_multiplier must be non-negative")
         if not 0.0 <= self.support_quantile < 0.5:
             raise ValueError("support_quantile must be in [0, 0.5)")
+        if self.selection_haircut < 0.0:
+            raise ValueError("selection_haircut must be non-negative")

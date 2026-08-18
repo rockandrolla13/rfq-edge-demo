@@ -4,7 +4,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pandas as pd
+
+from rfq_edge.config import (
+    FillModelConfig,
+    OptimizerConfig,
+    SelectionModelConfig,
+    ValueModelConfig,
+)
 from rfq_edge.costs import CostParams
+from rfq_edge.optimizer import FittedQuoteModels, fit_quote_models
+from rfq_edge.responders import (
+    compare_responders,
+    observable_view,
+    scan_responder_grid,
+)
+from rfq_edge.splits import chronological_train_test_split
+from rfq_edge.value_model import make_chronological_oof_v0
 from rfq_edge.responder_fill import FillModelParams
 from rfq_edge.objective import ResponderModels
 from rfq_edge.responder_optimizer import (
@@ -21,6 +37,98 @@ from rfq_edge.responder_value import (
     estimate_fair_value,
     quoted_price,
 )
+
+
+@dataclass(frozen=True)
+class FittedFramework:
+    """All fitted components plus the chronological data partitions.
+
+    :param models: Fitted value, fill, and selection models.
+    :param train_df: Training rows with out-of-fold V0 merged in.
+    :param test_df: Held-out rows with out-of-fold V0 merged in. Latent
+        columns are preserved here for oracle diagnostics only.
+    :param value_config: Value-model configuration used.
+    :param fill_config: Fill-model configuration used.
+    :param selection_config: Selection-model configuration used.
+    """
+
+    models: FittedQuoteModels
+    train_df: pd.DataFrame
+    test_df: pd.DataFrame
+    value_config: ValueModelConfig
+    fill_config: FillModelConfig
+    selection_config: SelectionModelConfig
+
+
+def fit_framework(
+    df: pd.DataFrame,
+    value_config: ValueModelConfig | None = None,
+    fill_config: FillModelConfig | None = None,
+    selection_config: SelectionModelConfig | None = None,
+) -> FittedFramework:
+    """Fit the complete responder framework on a chronological split.
+
+    Latent simulator columns, if present, are stripped before any model
+    fitting or prediction; they survive only in the returned dataframes so
+    oracle diagnostics can use them downstream.
+
+    :param df: Full RFQ history, optionally including latent columns.
+    :param value_config: Value-model configuration.
+    :param fill_config: Fill-model configuration.
+    :param selection_config: Selection-model configuration.
+    :return: Fitted models plus prepared train and test partitions.
+    """
+
+    resolved_value_config = value_config or ValueModelConfig()
+    resolved_fill_config = fill_config or FillModelConfig()
+    resolved_selection_config = selection_config or SelectionModelConfig()
+
+    observable = observable_view(df)
+    oof = make_chronological_oof_v0(observable, resolved_value_config)
+    prepared = df.merge(oof[["rfq_id", "v0_oof"]], on="rfq_id", how="left")
+    split = chronological_train_test_split(
+        prepared, resolved_value_config.chronological_test_fraction
+    )
+    train_observable = observable_view(split.train_df)
+    train_fills = train_observable.loc[
+        train_observable["won"] & train_observable["v0_oof"].notna()
+    ]
+    models = fit_quote_models(
+        train_observable,
+        train_fills,
+        resolved_value_config,
+        resolved_fill_config,
+        resolved_selection_config,
+    )
+    return FittedFramework(
+        models=models,
+        train_df=split.train_df,
+        test_df=split.test_df,
+        value_config=resolved_value_config,
+        fill_config=resolved_fill_config,
+        selection_config=resolved_selection_config,
+    )
+
+
+def score_rfq(
+    framework: FittedFramework,
+    rfq: pd.DataFrame,
+    optimizer_config: OptimizerConfig | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Scan the candidate grid and compare responders for one RFQ.
+
+    :param framework: Fitted framework.
+    :param rfq: Single-row RFQ dataframe.
+    :param optimizer_config: Grid, cost, and inventory calibration.
+    :return: Dict with the candidate ``grid`` and the responder ``comparison``.
+    """
+
+    grid = scan_responder_grid(rfq, framework.models, optimizer_config)
+    comparison = compare_responders(rfq, framework.models, optimizer_config)
+    return {
+        "grid": grid,
+        "comparison": comparison,
+    }
 
 
 @dataclass(frozen=True)
