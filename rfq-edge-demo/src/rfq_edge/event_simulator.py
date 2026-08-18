@@ -121,6 +121,9 @@ def simulate_episode(
         oracle_p_win = float("nan")
         rfq_reward_realized = 0.0
         rfq_reward_expected = float("nan")
+        apparent_edge = 0.0
+        realized_selection = 0.0
+        rfq_cost = 0.0
         if event is not None:
             rfq_action = policy.respond_to_rfq(state, event)
             if rfq_action.action_type is ActionType.QUOTE_RFQ:
@@ -139,6 +142,22 @@ def simulate_episode(
                         side_sign=event.side_sign,
                         size=event.size,
                         transaction_cost_cents=market_config.rfq_transaction_cost_cents,
+                    )
+                    # Decomposition: reward = apparent edge - selection - cost.
+                    apparent_edge = (
+                        float(event.size)
+                        * float(event.side_sign)
+                        * (event.cp_plus - rfq_action.quote)
+                        * 100.0
+                    )
+                    realized_selection = (
+                        float(event.size)
+                        * float(event.side_sign)
+                        * (-event.hidden_future_residual)
+                        * 100.0
+                    )
+                    rfq_cost = (
+                        float(event.size) * market_config.rfq_transaction_cost_cents
                     )
                 rfq_reward_expected = float(
                     rfq_action.predicted_p_win
@@ -160,6 +179,7 @@ def simulate_episode(
 
         active_amount = 0
         active_cost = 0.0
+        active_impact = 0.0
         if episode_config.active_execution_allowed:
             active_state = ControlState(
                 time_index=step,
@@ -180,6 +200,9 @@ def simulate_episode(
             active_amount = int(active_action.active_execution_amount)
             if active_amount != 0:
                 active_cost = active_execution_cost_cents(active_amount, regime_params)
+                active_impact = (
+                    regime_params.active_impact_cents * float(active_amount) ** 2
+                )
 
         inventory_after = inventory_after_rfq + active_amount
         _assert_within_limit(inventory_after, episode_config)
@@ -231,7 +254,11 @@ def simulate_episode(
                 "inventory_after": inventory_after,
                 "rfq_reward_cents": rfq_reward_realized,
                 "rfq_reward_expected_cents": rfq_reward_expected,
+                "apparent_edge_cents": apparent_edge,
+                "realized_selection_cents": realized_selection,
+                "rfq_cost_cents": rfq_cost,
                 "active_execution_cost_cents": active_cost,
+                "active_impact_cents": active_impact,
                 "running_inventory_penalty_cents": running_penalty,
                 "cumulative_reward_cents": cumulative_reward,
                 "remaining_target_shortfall": target_shortfall(

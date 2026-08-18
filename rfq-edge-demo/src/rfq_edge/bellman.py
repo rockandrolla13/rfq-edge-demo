@@ -321,6 +321,7 @@ def bellman_residual(solution: BellmanSolution) -> dict[str, float]:
             (stacked > RESIDUAL_TOLERANCE_CENTS).sum()
         ),
         "tolerance_cents": RESIDUAL_TOLERANCE_CENTS,
+        "per_step_max_abs_residual_cents": stacked.max(axis=(1, 2)).tolist(),
     }
 
 
