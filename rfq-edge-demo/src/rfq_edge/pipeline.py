@@ -191,6 +191,7 @@ def cold_start_comparison(
                 "train_rfqs_on_bond": int(bond_counts.get(str(row.iloc[0]["bond_id"]), 0)),
                 "cp_plus": float(row.iloc[0]["cp_plus"]),
                 "predicted_v0": v0,
+                "v0_minus_cp_plus_cents": (v0 - float(row.iloc[0]["cp_plus"])) * 100.0,
                 "predicted_selection_cents": selection * 100.0,
                 "accepted": decision.accepted,
                 "selected_quote": decision.quote,
