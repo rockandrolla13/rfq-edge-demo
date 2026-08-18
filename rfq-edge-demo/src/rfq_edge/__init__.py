@@ -6,7 +6,11 @@ from rfq_edge.config import (
     SelectionModelConfig,
     ValueModelConfig,
 )
-from rfq_edge.evaluation import compute_forecast_metrics, format_metrics_table
+from rfq_edge.evaluation import (
+    compute_forecast_metrics,
+    format_metrics_table,
+    liquidity_buckets,
+)
 from rfq_edge.features import (
     COST_FEATURE_COLUMNS,
     FILL_FEATURE_COLUMNS,
@@ -41,6 +45,8 @@ from rfq_edge.splits import ChronologicalSplit, chronological_train_test_split
 from rfq_edge.costs import CostParams, points_to_cents, rfq_trading_cost_points, trading_cost_bps
 from rfq_edge.fill_model import (
     FittedFillModel,
+    counterfactual_fill_curve,
+    counterfactual_fill_curves_by,
     evaluate_fill_model,
     fill_train_test_split,
     fit_fill_model,
@@ -63,6 +69,7 @@ from rfq_edge.pipeline import (
     FittedFramework,
     PipelineConfig,
     ResponderDecision,
+    cold_start_comparison,
     default_config,
     fit_framework,
     run_book,
@@ -87,7 +94,9 @@ from rfq_edge.responders import (
 )
 from rfq_edge.simulation_diagnostics import (
     OracleContext,
+    append_oracle_objective,
     build_oracle_context,
+    oracle_best_decision,
     oracle_conditional_edge,
     oracle_expected_objective,
     oracle_fill_probability,
@@ -101,12 +110,14 @@ from rfq_edge.simulation_diagnostics import (
 from rfq_edge.selection_model import (
     FittedSelectionModel,
     V0_OOF_COLUMN,
+    counterfactual_selection_curve,
     evaluate_selection_model,
     fit_selection_model,
     format_selection_metrics,
     make_selection_target,
     predict_conditional_mark,
     predict_selection,
+    predicted_selection_by_liquidity,
     selection_train_test_split,
 )
 from rfq_edge.synthetic import (
@@ -182,8 +193,13 @@ __all__ = [
     "ValueModelParams",
     "adverse_selection_bps",
     "aggressiveness_grid",
+    "append_oracle_objective",
     "build_oracle_context",
     "choose_from_grid",
+    "cold_start_comparison",
+    "counterfactual_fill_curve",
+    "counterfactual_fill_curves_by",
+    "counterfactual_selection_curve",
     "chronological_train_test_split",
     "compare_responders",
     "compute_forecast_metrics",
@@ -210,6 +226,7 @@ __all__ = [
     "format_selection_metrics",
     "generate_modeling_book",
     "generate_rfq_book",
+    "liquidity_buckets",
     "make_chronological_oof_v0",
     "make_fill_features",
     "make_candidate_quote_features",
@@ -221,6 +238,7 @@ __all__ = [
     "maximize_expected_pnl",
     "observable_view",
     "optimize_quote",
+    "oracle_best_decision",
     "oracle_conditional_edge",
     "oracle_expected_objective",
     "oracle_fill_probability",
@@ -234,6 +252,7 @@ __all__ = [
     "predict_v0",
     "predict_value_residual",
     "predict_win_probability",
+    "predicted_selection_by_liquidity",
     "quote_aggressiveness",
     "quote_from_aggressiveness",
     "quoted_price",

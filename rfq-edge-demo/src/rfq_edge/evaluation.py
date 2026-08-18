@@ -27,6 +27,23 @@ def capped_size_weights(sizes: pd.Series, size_weight_cap: float) -> pd.Series:
     return pd.Series(normalized, index=sizes.index)
 
 
+def liquidity_buckets(liquidity_score: pd.Series, n_buckets: int = 3) -> pd.Series:
+    """Assign RFQs to labelled liquidity quantile buckets.
+
+    :param liquidity_score: Liquidity scores in [0, 1].
+    :param n_buckets: Number of quantile buckets (max 3 labels).
+    :return: String bucket labels aligned to the input index.
+    """
+
+    labels = ["low", "medium", "high"][:n_buckets]
+    return pd.qcut(
+        liquidity_score.astype(float),
+        q=n_buckets,
+        labels=labels,
+        duplicates="drop",
+    ).astype(str)
+
+
 def compute_forecast_metrics(
     actual_prices: pd.Series,
     predicted_prices: pd.Series,

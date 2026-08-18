@@ -131,6 +131,75 @@ def score_rfq(
     }
 
 
+def cold_start_comparison(
+    framework: FittedFramework,
+    optimizer_config: OptimizerConfig | None = None,
+) -> pd.DataFrame:
+    """Compare predictions across bond-history regimes, including cold starts.
+
+    Four cases are built from the held-out test set: the most active bond,
+    a sparse bond, an unseen bond from a known issuer, and a bond from an
+    unseen issuer. The unseen cases clone a real RFQ and relabel identifiers,
+    so pooled categorical encoders must fall back to issuer or population
+    behavior.
+
+    :param framework: Fitted framework.
+    :param optimizer_config: Grid, cost, and inventory calibration.
+    :return: One row per case with V0, predicted selection, and the
+        edge-consistent decision.
+    """
+
+    from rfq_edge.responders import ResponderKind, respond_to_rfq
+    from rfq_edge.selection_model import predict_selection
+    from rfq_edge.value_model import predict_v0
+
+    test_observable = observable_view(framework.test_df)
+    train_observable = observable_view(framework.train_df)
+    bond_counts = train_observable.groupby("bond_id").size()
+
+    tradeable = test_observable.loc[test_observable["bond_id"].isin(bond_counts.index)]
+    counts_for_test = tradeable["bond_id"].map(bond_counts)
+    active_row = tradeable.loc[[counts_for_test.idxmax()]]
+    sparse_row = tradeable.loc[[counts_for_test.idxmin()]]
+
+    unseen_bond_row = sparse_row.copy()
+    unseen_bond_row["bond_id"] = "bond-unseen-0001"
+    unseen_issuer_row = sparse_row.copy()
+    unseen_issuer_row["bond_id"] = "bond-unseen-0002"
+    unseen_issuer_row["issuer_id"] = "issuer-unseen-01"
+
+    cases = {
+        "active bond": active_row,
+        "sparse bond": sparse_row,
+        "unseen bond, known issuer": unseen_bond_row,
+        "unseen issuer": unseen_issuer_row,
+    }
+    records: list[dict[str, object]] = []
+    for case_name, row in cases.items():
+        v0 = float(predict_v0(framework.models.value_model, row).iloc[0])
+        selection = float(
+            predict_selection(framework.models.selection_model, row).iloc[0]
+        )
+        decision = respond_to_rfq(
+            row, framework.models, ResponderKind.EDGE_CONSISTENT, optimizer_config
+        )
+        records.append(
+            {
+                "case": case_name,
+                "bond_id": str(row.iloc[0]["bond_id"]),
+                "issuer_id": str(row.iloc[0]["issuer_id"]),
+                "train_rfqs_on_bond": int(bond_counts.get(str(row.iloc[0]["bond_id"]), 0)),
+                "cp_plus": float(row.iloc[0]["cp_plus"]),
+                "predicted_v0": v0,
+                "predicted_selection_cents": selection * 100.0,
+                "accepted": decision.accepted,
+                "selected_quote": decision.quote,
+                "expected_value_cents": decision.expected_value_cents,
+            }
+        )
+    return pd.DataFrame(records)
+
+
 @dataclass(frozen=True)
 class PipelineConfig:
     """Responder models plus the edge search used to quote a book.

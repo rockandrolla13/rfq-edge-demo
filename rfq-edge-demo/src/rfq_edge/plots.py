@@ -119,6 +119,35 @@ def plot_simulation_workflow() -> tuple[Figure, Axes]:
     return fig, ax
 
 
+def plot_distribution(
+    values: pd.Series,
+    title: str,
+    xlabel: str,
+    bins: int = 40,
+    color: str = COLOR_PLAIN_V0,
+    log_x: bool = False,
+) -> tuple[Figure, Axes]:
+    """Histogram of one observable RFQ quantity.
+
+    :param values: Series to plot.
+    :param title: Plot title.
+    :param xlabel: X-axis label including units.
+    :param bins: Number of histogram bins.
+    :param color: Bar color.
+    :param log_x: Whether to use a logarithmic x scale.
+    :return: Figure and axes.
+    """
+
+    fig, ax = plt.subplots(figsize=(7.5, 4.0))
+    ax.hist(values.astype(float), bins=bins, color=color, edgecolor="white")
+    if log_x:
+        ax.set_xscale("log")
+    ax.set_title(title, fontsize=TITLE_SIZE)
+    ax.set_xlabel(xlabel, fontsize=LABEL_SIZE)
+    ax.set_ylabel("Count", fontsize=LABEL_SIZE)
+    return fig, ax
+
+
 def plot_bond_activity_distribution(df: pd.DataFrame) -> tuple[Figure, Axes]:
     """Histogram of RFQ counts per bond, showing sparse bond coverage.
 
@@ -486,17 +515,19 @@ def plot_fill_probability_by_side(curves_by_side: dict[str, pd.DataFrame]) -> tu
 
 def plot_fill_probability_by_client_tier(
     curves_by_tier: dict[str, pd.DataFrame],
+    title: str = "Fill probability by client tier",
 ) -> tuple[Figure, Axes]:
-    """Counterfactual fill curves per client tier.
+    """Counterfactual fill curves per category (client tier by default).
 
-    :param curves_by_tier: tier label -> frame with aggressiveness and p_win.
+    :param curves_by_tier: category label -> frame with aggressiveness and p_win.
+    :param title: Plot title, overridable for other categorical splits.
     :return: Figure and axes.
     """
 
     fig, ax = plt.subplots(figsize=(8.0, 4.6))
     for tier, curve in sorted(curves_by_tier.items()):
         ax.plot(curve["aggressiveness"], curve["p_win"], marker="o", markersize=4, label=tier)
-    ax.set_title("Fill probability by client tier", fontsize=TITLE_SIZE)
+    ax.set_title(title, fontsize=TITLE_SIZE)
     ax.set_xlabel("Normalized aggressiveness z", fontsize=LABEL_SIZE)
     ax.set_ylabel("Mean predicted win probability", fontsize=LABEL_SIZE)
     ax.set_ylim(0.0, 1.0)

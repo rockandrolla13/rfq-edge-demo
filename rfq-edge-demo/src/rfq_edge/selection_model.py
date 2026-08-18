@@ -164,6 +164,67 @@ def evaluate_selection_model(
     return metrics
 
 
+def counterfactual_selection_curve(
+    model: FittedSelectionModel,
+    df: pd.DataFrame,
+    aggressiveness_values: tuple[float, ...] = (-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5),
+) -> pd.DataFrame:
+    """Mean predicted adverse selection across a counterfactual quote grid.
+
+    :param model: Fitted selection model.
+    :param df: RFQ dataframe to average over.
+    :param aggressiveness_values: Normalized aggressiveness grid.
+    :return: Frame with columns ``aggressiveness`` and ``selection_cents``.
+    """
+
+    records: list[dict[str, float]] = []
+    for aggressiveness in aggressiveness_values:
+        quote = (
+            df["cp_plus"].astype(float)
+            + df["side_sign"].astype(float) * aggressiveness * df["market_width"].astype(float)
+        )
+        mean_selection = float(predict_selection(model, df, quote=quote).mean())
+        records.append(
+            {
+                "aggressiveness": aggressiveness,
+                "selection_cents": mean_selection * 100.0,
+            }
+        )
+    return pd.DataFrame(records)
+
+
+def predicted_selection_by_liquidity(
+    model: FittedSelectionModel,
+    df: pd.DataFrame,
+    n_buckets: int = 3,
+) -> pd.DataFrame:
+    """Mean predicted selection at historical quotes per liquidity bucket.
+
+    :param model: Fitted selection model.
+    :param df: RFQ dataframe.
+    :param n_buckets: Number of liquidity quantile buckets.
+    :return: Frame with columns ``bucket`` and ``selection_cents``.
+    """
+
+    labels = ["low", "medium", "high"][:n_buckets]
+    buckets = pd.qcut(
+        df["liquidity_score"].astype(float),
+        q=n_buckets,
+        labels=labels,
+        duplicates="drop",
+    )
+    predictions = predict_selection(model, df)
+    frame = pd.DataFrame({"bucket": buckets.astype(str), "selection": predictions})
+    grouped = frame.groupby("bucket", sort=False, observed=True)["selection"].mean()
+    ordered = [label for label in labels if label in grouped.index]
+    return pd.DataFrame(
+        {
+            "bucket": ordered,
+            "selection_cents": [float(grouped[label]) * 100.0 for label in ordered],
+        }
+    )
+
+
 def selection_train_test_split(
     fills_df: pd.DataFrame,
     config: SelectionModelConfig | None = None,

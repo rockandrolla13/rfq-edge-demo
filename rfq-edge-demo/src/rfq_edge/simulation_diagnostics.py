@@ -298,6 +298,71 @@ def oracle_optimal_quote(
     return pd.DataFrame(records)
 
 
+def append_oracle_objective(
+    comparison: pd.DataFrame,
+    rfq: pd.DataFrame,
+    context: OracleContext,
+    optimizer_config: OptimizerConfig | None = None,
+    n_draws: int = DEFAULT_ORACLE_DRAWS,
+    random_state: int = DEFAULT_ORACLE_SEED,
+) -> pd.DataFrame:
+    """Attach the oracle expected objective to each responder's decision.
+
+    Declined responders receive an oracle objective of zero, matching the
+    value of the decline option.
+
+    :param comparison: Output of ``compare_responders`` for one RFQ.
+    :param rfq: The same single latent RFQ row.
+    :param context: Oracle context.
+    :param optimizer_config: Cost and inventory calibration.
+    :param n_draws: Monte Carlo draws per selected quote.
+    :param random_state: Seed for reproducible integration.
+    :return: Copy of ``comparison`` with ``oracle_expected_objective_cents``.
+    :raises ValueError: If ``rfq`` does not contain exactly one row.
+    """
+
+    if len(rfq) != 1:
+        raise ValueError("append_oracle_objective expects exactly one RFQ row")
+    augmented = comparison.copy()
+    oracle_values: list[float] = []
+    for _, decision in augmented.iterrows():
+        if not bool(decision["accepted"]) or pd.isna(decision["quote"]):
+            oracle_values.append(0.0)
+            continue
+        objective = oracle_expected_objective(
+            rfq,
+            float(decision["quote"]),
+            context,
+            optimizer_config=optimizer_config,
+            n_draws=n_draws,
+            random_state=random_state,
+        )
+        oracle_values.append(float(objective.iloc[0]))
+    augmented["oracle_expected_objective_cents"] = oracle_values
+    return augmented
+
+
+def oracle_best_decision(oracle_grid: pd.DataFrame) -> dict[str, float | bool]:
+    """Summarize the oracle-optimal action from an oracle grid table.
+
+    :param oracle_grid: Output of :func:`oracle_optimal_quote`.
+    :return: Best quote, aggressiveness, objective, and respond/decline flag.
+    :raises ValueError: If the grid is empty.
+    """
+
+    if oracle_grid.empty:
+        raise ValueError("oracle grid must not be empty")
+    best = oracle_grid.loc[oracle_grid["oracle_expected_objective_cents"].idxmax()]
+    accepted = bool(best["oracle_expected_objective_cents"] > 0.0)
+    return {
+        "accepted": accepted,
+        "quote": float(best["quote"]) if accepted else float("nan"),
+        "aggressiveness": float(best["aggressiveness"]) if accepted else float("nan"),
+        "oracle_p_win": float(best["oracle_p_win"]) if accepted else 0.0,
+        "oracle_expected_objective_cents": float(best["oracle_expected_objective_cents"]),
+    }
+
+
 def win_rate_by_aggressiveness_bucket(df: pd.DataFrame, n_buckets: int = 8) -> pd.DataFrame:
     """Summarize empirical win rate by historical aggressiveness bucket.
 

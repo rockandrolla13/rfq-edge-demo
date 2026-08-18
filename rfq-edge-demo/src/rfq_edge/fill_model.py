@@ -125,6 +125,56 @@ def evaluate_fill_model(
     return metrics
 
 
+def counterfactual_fill_curve(
+    model: FittedFillModel,
+    df: pd.DataFrame,
+    aggressiveness_values: tuple[float, ...] = (-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5),
+) -> pd.DataFrame:
+    """Mean predicted win probability across a counterfactual quote grid.
+
+    :param model: Fitted fill model.
+    :param df: RFQ dataframe to average over.
+    :param aggressiveness_values: Normalized aggressiveness grid.
+    :return: Frame with columns ``aggressiveness`` and ``p_win``.
+    """
+
+    records: list[dict[str, float]] = []
+    for aggressiveness in aggressiveness_values:
+        quote = (
+            df["cp_plus"].astype(float)
+            + df["side_sign"].astype(float) * aggressiveness * df["market_width"].astype(float)
+        )
+        mean_probability = float(predict_win_probability(model, df, quote=quote).mean())
+        records.append({"aggressiveness": aggressiveness, "p_win": mean_probability})
+    return pd.DataFrame(records)
+
+
+def counterfactual_fill_curves_by(
+    model: FittedFillModel,
+    df: pd.DataFrame,
+    column: str,
+    aggressiveness_values: tuple[float, ...] = (-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5),
+) -> dict[str, pd.DataFrame]:
+    """Counterfactual fill curves split by one categorical column.
+
+    :param model: Fitted fill model.
+    :param df: RFQ dataframe to average over.
+    :param column: Categorical column used to split the population.
+    :param aggressiveness_values: Normalized aggressiveness grid.
+    :return: Mapping from category label to its fill curve.
+    :raises ValueError: If the split column is missing.
+    """
+
+    if column not in df.columns:
+        raise ValueError(f"column {column} not present in dataframe")
+    curves: dict[str, pd.DataFrame] = {}
+    for label, group in df.groupby(column, sort=True, observed=True):
+        curves[str(label)] = counterfactual_fill_curve(
+            model, group, aggressiveness_values
+        )
+    return curves
+
+
 def fill_train_test_split(
     df: pd.DataFrame,
     config: FillModelConfig | None = None,
