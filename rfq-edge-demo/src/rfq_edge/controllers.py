@@ -302,6 +302,28 @@ class _BellmanPolicy:
         )
 
 
+class DeclineAllRFQs(_BellmanPolicy):
+    """Ablation policy: declines every RFQ, keeps dynamic active execution.
+
+    Used only to attribute how much of the dynamic controller's value comes
+    from internalizing RFQ flow versus trading actively. The Bellman
+    solution passed in should be solved on a zero-arrival market so the
+    active policy does not count on RFQ flow that will never be accepted.
+    """
+
+    name = "DynamicNoRFQ"
+
+    def respond_to_rfq(self, state: ControlState, event: RFQEvent) -> ControlAction:
+        """Always decline.
+
+        :param state: Control state.
+        :param event: Incoming RFQ.
+        :return: Decline action.
+        """
+
+        return _decline(self.name)
+
+
 class DynamicMarketMaker(_BellmanPolicy):
     """Dynamic controller with a zero-inventory market-making objective."""
 

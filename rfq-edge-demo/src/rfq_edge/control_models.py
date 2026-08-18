@@ -101,6 +101,50 @@ class FittedControlModels:
         return event.cp_plus - float(event.side_sign) * selection
 
 
+@dataclass(frozen=True)
+class HybridControlModels:
+    """Ablation bundle mixing fill and post-win value sources.
+
+    Used only for attribution studies ("oracle fill only" / "oracle post-win
+    value only"). Marginal planning calls are delegated to the fill source
+    for probabilities and the value source for selection.
+
+    :param fill_source: Bundle answering fill-probability queries.
+    :param value_source: Bundle answering post-win value and selection queries.
+    """
+
+    fill_source: object
+    value_source: object
+
+    def fill_probability(
+        self, regime_index: int, aggressiveness: np.ndarray, size: int
+    ) -> np.ndarray:
+        """Delegate marginal fill probability to the fill source."""
+
+        return self.fill_source.fill_probability(regime_index, aggressiveness, size)
+
+    def selection_points(
+        self, regime_index: int, aggressiveness: np.ndarray
+    ) -> np.ndarray:
+        """Delegate marginal selection to the value source."""
+
+        return self.value_source.selection_points(regime_index, aggressiveness)
+
+    def event_fill_probability(
+        self, event: RFQEvent, aggressiveness: np.ndarray
+    ) -> np.ndarray:
+        """Delegate per-event fill probability to the fill source."""
+
+        return self.fill_source.event_fill_probability(event, aggressiveness)
+
+    def event_post_win_value(
+        self, event: RFQEvent, aggressiveness: np.ndarray
+    ) -> np.ndarray:
+        """Delegate per-event post-win value to the value source."""
+
+        return self.value_source.event_post_win_value(event, aggressiveness)
+
+
 def fit_control_models(history: pd.DataFrame) -> FittedControlModels:
     """Fit per-regime fill and selection models from observable history.
 

@@ -373,6 +373,148 @@ def modified_market(
     return dataclasses.replace(market_config, **replacements)
 
 
+ABLATION_ORDER: tuple[str, ...] = (
+    "plain (no selection adjustment)",
+    "myopic (no continuation value)",
+    "dynamic, no active execution",
+    "dynamic, no RFQ internalization",
+    "dynamic + oracle fill only",
+    "dynamic + oracle post-win value only",
+    "dynamic (full, fitted)",
+    "oracle (full)",
+)
+
+
+def run_ablation_study(
+    artifacts: ControlArtifacts,
+    episode_config: EpisodeConfig,
+    n_episodes: int,
+    random_state: int,
+) -> pd.DataFrame:
+    """Attribute the dynamic controller's value to its ingredients.
+
+    Every variant runs on identical exogenous paths (common random numbers).
+    Hybrid variants replace exactly one fitted ingredient with its oracle
+    counterpart; they exist only for attribution and are never part of the
+    headline comparison.
+
+    :param artifacts: Control artifacts.
+    :param episode_config: Episode to study.
+    :param n_episodes: Episodes per variant.
+    :param random_state: Seed controlling the shared paths.
+    :return: One row per variant with mean outcome components, ordered as
+        ABLATION_ORDER.
+    """
+
+    from rfq_edge.bellman import solve_bellman
+    from rfq_edge.control_models import HybridControlModels
+    from rfq_edge.controllers import (
+        DeclineAllRFQs,
+        DynamicExecutionController,
+        EdgeConsistentMyopicResponder,
+        OracleDynamicController,
+        PlainResponder,
+    )
+
+    market = artifacts.market_config
+    fitted = artifacts.fitted_models
+    oracle = artifacts.oracle_models
+    no_active_config = with_overrides(episode_config, active_execution_allowed=False)
+    no_arrival_market = modified_market(market, arrival_scale=0.0)
+    oracle_fill = HybridControlModels(fill_source=oracle, value_source=fitted)
+    oracle_value = HybridControlModels(fill_source=fitted, value_source=oracle)
+
+    # (variant, policy, episode config used in simulation).
+    variants: list[tuple[str, object, EpisodeConfig]] = [
+        (
+            ABLATION_ORDER[0],
+            PlainResponder(market, fitted),
+            episode_config,
+        ),
+        (
+            ABLATION_ORDER[1],
+            EdgeConsistentMyopicResponder(market, episode_config, fitted),
+            episode_config,
+        ),
+        (
+            ABLATION_ORDER[2],
+            DynamicExecutionController(
+                market, fitted, solve_bellman(no_active_config, market, fitted)
+            ),
+            no_active_config,
+        ),
+        (
+            ABLATION_ORDER[3],
+            DeclineAllRFQs(
+                market, fitted,
+                solve_bellman(episode_config, no_arrival_market, fitted),
+            ),
+            episode_config,
+        ),
+        (
+            ABLATION_ORDER[4],
+            DynamicExecutionController(
+                market, oracle_fill,
+                solve_bellman(episode_config, market, oracle_fill),
+            ),
+            episode_config,
+        ),
+        (
+            ABLATION_ORDER[5],
+            DynamicExecutionController(
+                market, oracle_value,
+                solve_bellman(episode_config, market, oracle_value),
+            ),
+            episode_config,
+        ),
+        (
+            ABLATION_ORDER[6],
+            DynamicExecutionController(
+                market, fitted, solve_bellman(episode_config, market, fitted)
+            ),
+            episode_config,
+        ),
+        (
+            ABLATION_ORDER[7],
+            OracleDynamicController(
+                market, oracle, solve_bellman(episode_config, market, oracle)
+            ),
+            episode_config,
+        ),
+    ]
+
+    seed_rng = np.random.default_rng(random_state)
+    seeds = seed_rng.integers(0, 2**31 - 1, size=n_episodes)
+    rows = []
+    for variant_name, policy, sim_config in variants:
+        summaries = []
+        for episode_index in range(n_episodes):
+            path = simulate_exogenous_path(
+                market, sim_config, random_state=int(seeds[episode_index])
+            )
+            result = simulate_episode(policy, sim_config, market, path)
+            summaries.append(summarize_episode_log(result.log, sim_config))
+        frame = pd.DataFrame(summaries)
+        rows.append(
+            {
+                "variant": variant_name,
+                "total_objective_cents": float(frame["total_objective_cents"].mean()),
+                "realized_clean_edge_cents": float(
+                    frame["realized_clean_edge_cents"].mean()
+                ),
+                "adverse_selection_cents": float(
+                    frame["adverse_selection_cents"].mean()
+                ),
+                "active_execution_cost_cents": float(
+                    frame["active_execution_cost_cents"].mean()
+                ),
+                "terminal_penalty_cents": float(frame["terminal_penalty_cents"].mean()),
+                "target_completion_pct": float(frame["target_completion_pct"].mean()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def run_control_sensitivity(
     base_episode_config: EpisodeConfig,
     base_artifacts: ControlArtifacts,

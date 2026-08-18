@@ -746,6 +746,141 @@ def plot_regime_performance(
     return figure, axes
 
 
+def plot_market_regime_path(
+    path,
+    title: str,
+) -> tuple[Figure, np.ndarray]:
+    """CP+ path with regime shading and the RFQ arrival stream.
+
+    The bottom panel shows each RFQ's hidden client signal, which exists
+    only inside the simulator: fitted policies never observe it.
+
+    :param path: Exogenous path from ``simulate_exogenous_path``.
+    :param title: Figure title.
+    :return: Figure and array of axes.
+    """
+
+    from rfq_edge.control_config import REGIME_ORDER
+
+    regime_colors = ("#d9ead3", "#fff2cc", "#f4cccc")
+    figure, axes = plt.subplots(
+        2, 1, figsize=(10.0, 6.0), sharex=True,
+        gridspec_kw={"height_ratios": (2.0, 1.2)},
+    )
+    steps = np.arange(len(path.cp_plus))
+    for step in steps:
+        for panel in axes:
+            panel.axvspan(
+                step - 0.5, step + 0.5,
+                color=regime_colors[int(path.regimes[step])], alpha=0.55, linewidth=0,
+            )
+    axes[0].plot(steps, path.cp_plus, color="#1f77b4", label="CP+ (points)")
+    axes[0].set_ylabel("CP+ clean price (points)", fontsize=_LABEL_SIZE)
+    handles = [
+        Line2D([0], [0], marker="s", color="none", markerfacecolor=color,
+               markersize=10, label=regime.name)
+        for regime, color in zip(REGIME_ORDER, regime_colors)
+    ]
+    handles.append(Line2D([0], [0], color="#1f77b4", label="CP+"))
+    axes[0].legend(handles=handles, fontsize=8, ncol=2)
+
+    for step, event in enumerate(path.events):
+        if event is None:
+            continue
+        marker = "^" if event.side_sign == 1 else "v"
+        color = "#2ca02c" if event.side_sign == 1 else "#d62728"
+        axes[1].scatter(step, event.hidden_client_signal, marker=marker,
+                        color=color, s=36)
+    axes[1].axhline(0.0, color="black", linewidth=0.8)
+    axes[1].set_ylabel("hidden client signal h\n(simulation only)", fontsize=9)
+    axes[1].set_xlabel("time step", fontsize=_LABEL_SIZE)
+    figure.suptitle(title, fontsize=_TITLE_SIZE)
+    figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
+    return figure, axes
+
+
+def plot_true_quote_curves(
+    oracle_models,
+    aggressiveness_grid: np.ndarray,
+    title: str,
+) -> tuple[Figure, np.ndarray]:
+    """Marginal true fill probability and adverse selection per regime.
+
+    :param oracle_models: Oracle control models.
+    :param aggressiveness_grid: Candidate z values.
+    :param title: Figure title.
+    :return: Figure and array of axes.
+    """
+
+    from rfq_edge.control_config import REGIME_ORDER
+
+    figure, axes = plt.subplots(1, 2, figsize=(11.0, 4.0))
+    colors = ("#2ca02c", "#1f77b4", "#d62728")
+    for regime, color in zip(REGIME_ORDER, colors):
+        p = oracle_models.fill_probability(regime.value, aggressiveness_grid, size=1)
+        a = oracle_models.selection_points(regime.value, aggressiveness_grid) * 100.0
+        axes[0].plot(aggressiveness_grid, p, color=color, label=regime.name)
+        axes[1].plot(aggressiveness_grid, a, color=color, label=regime.name)
+    axes[0].set_ylabel("true fill probability", fontsize=_LABEL_SIZE)
+    axes[1].set_ylabel("true adverse selection A(z) (cents)", fontsize=_LABEL_SIZE)
+    axes[1].axhline(0.0, color="black", linewidth=0.8)
+    for panel in axes:
+        panel.set_xlabel("normalized aggressiveness z", fontsize=_LABEL_SIZE)
+        panel.legend(fontsize=8)
+        panel.tick_params(labelsize=9)
+    figure.suptitle(title, fontsize=_TITLE_SIZE)
+    figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.93))
+    return figure, axes
+
+
+def plot_cumulative_reward(log: pd.DataFrame, title: str) -> tuple[Figure, plt.Axes]:
+    """Cumulative simulated control reward over one episode.
+
+    :param log: Episode event log.
+    :param title: Plot title.
+    :return: Figure and axes.
+    """
+
+    figure, axes = _new_axes(figsize=(10.0, 3.5))
+    axes.step(
+        log["time_index"], log["cumulative_reward_cents"],
+        where="post", color="#7b3fb3",
+    )
+    axes.axhline(0.0, color="black", linewidth=0.8)
+    axes.set_xlabel("time step", fontsize=_LABEL_SIZE)
+    axes.set_ylabel("cumulative reward (cents)", fontsize=_LABEL_SIZE)
+    axes.set_title(title, fontsize=_TITLE_SIZE)
+    return figure, axes
+
+
+def plot_ablation_totals(
+    ablation: pd.DataFrame,
+    title: str,
+) -> tuple[Figure, plt.Axes]:
+    """Mean total simulated control reward per ablation variant.
+
+    :param ablation: Output of ``run_ablation_study``.
+    :param title: Plot title.
+    :return: Figure and axes.
+    """
+
+    figure, axes = _new_axes(figsize=(9.5, 4.6))
+    positions = np.arange(len(ablation))
+    totals = ablation["total_objective_cents"].to_numpy(dtype=float)
+    colors = plt.get_cmap("viridis")(np.linspace(0.15, 0.9, len(ablation)))
+    axes.barh(positions, totals, color=colors)
+    axes.set_yticks(positions)
+    axes.set_yticklabels(ablation["variant"], fontsize=8.5)
+    axes.invert_yaxis()
+    axes.axvline(0.0, color="black", linewidth=0.8)
+    axes.set_xlabel(
+        "mean total simulated control reward (cents per episode)",
+        fontsize=_LABEL_SIZE,
+    )
+    axes.set_title(title, fontsize=_TITLE_SIZE)
+    return figure, axes
+
+
 def plot_sensitivity_heatmap(
     sensitivity: pd.DataFrame,
     metric: str,
