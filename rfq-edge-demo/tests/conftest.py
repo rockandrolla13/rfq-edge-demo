@@ -65,3 +65,12 @@ def demo_policy_result(demo_framework, demo_oracle_context) -> PolicyEvaluationR
         random_state=7,
         bootstrap_samples=50,
     )
+
+
+@pytest.fixture(scope="session")
+def control_artifacts():
+    """Control artifacts (history, fitted models, oracle) built once."""
+
+    from rfq_edge.control_pipeline import build_control_artifacts
+
+    return build_control_artifacts(n_training_events=10_000, random_state=0)
