@@ -180,6 +180,7 @@ def evaluate_quote_grid(
     cost_cents = points_to_cents(cost_points)
     inventory_value_cents = points_to_cents(inventory_value_points)
 
+    support_low, support_high = models.fill_model.aggressiveness_support
     rows: list[dict[str, float]] = []
     for aggressiveness in aggressiveness_grid(optimizer_config):
         quote = quote_from_aggressiveness(row, float(aggressiveness))
@@ -196,6 +197,7 @@ def evaluate_quote_grid(
         expected_value_cents = p_win * (
             clean_edge_cents - cost_cents + inventory_value_cents
         )
+        in_support = support_low <= float(aggressiveness) <= support_high
         rows.append(
             {
                 "quote": quote,
@@ -207,6 +209,7 @@ def evaluate_quote_grid(
                 "cost_cents": cost_cents,
                 "inventory_value_cents": inventory_value_cents,
                 "expected_value_cents": expected_value_cents,
+                "in_support": in_support,
             }
         )
     return pd.DataFrame(rows)
@@ -219,6 +222,9 @@ def optimize_quote(
 ) -> QuoteDecision:
     """Select the quote with the highest expected value, or decline.
 
+    Only candidates inside the trained aggressiveness support are eligible,
+    because model outputs outside historical quote coverage are extrapolations.
+
     :param rfq: Single-row RFQ dataframe.
     :param models: Fitted quote models.
     :param config: Optimizer configuration.
@@ -226,10 +232,20 @@ def optimize_quote(
     """
 
     table = evaluate_quote_grid(rfq, models, config)
-    if table["expected_value_cents"].notna().any():
-        best = table.loc[table["expected_value_cents"].idxmax()]
+    candidates = table.loc[table["in_support"]]
+    if candidates.empty:
+        # No candidate quote lies inside historical coverage, so any model
+        # output would be extrapolation; decline rather than guess.
+        return QuoteDecision(
+            accepted=False,
+            quote=None,
+            expected_value_cents=float("nan"),
+            candidate_table=table,
+        )
+    if candidates["expected_value_cents"].notna().any():
+        best = candidates.loc[candidates["expected_value_cents"].idxmax()]
     else:
-        best = table.iloc[0]
+        best = candidates.iloc[0]
     best_expected_value = float(best["expected_value_cents"])
     if best_expected_value <= 0.0:
         return QuoteDecision(

@@ -26,12 +26,18 @@ SECTORS: tuple[str, ...] = (
 RATING_BUCKETS: tuple[str, ...] = ("AAA", "AA", "A", "BBB", "BB", "HY")
 CLIENT_TIERS: tuple[str, ...] = ("retail", "professional", "informational")
 REGIMES: tuple[str, ...] = ("calm", "normal", "volatile")
+VENUES: tuple[str, ...] = ("tradeweb", "marketaxess", "bloomberg_rfq")
+
+SECONDS_PER_DAY = 86_400
+FIRST_TRADE_STALENESS_SECONDS = 30.0 * SECONDS_PER_DAY
 
 OBSERVABLE_COLUMNS: tuple[str, ...] = (
     "rfq_id",
     "timestamp",
     "bond_id",
     "issuer_id",
+    "client_id",
+    "venue",
     "sector",
     "rating_bucket",
     "client_tier",
@@ -50,6 +56,14 @@ OBSERVABLE_COLUMNS: tuple[str, ...] = (
     "inventory",
     "market_signal",
     "issuer_signal",
+    "number_of_dealers",
+    "quote_deadline_ms",
+    "bond_age_days",
+    "time_since_last_trade_seconds",
+    "recent_trade_count",
+    "recent_market_move",
+    "recent_issuer_move",
+    "is_inventory_axe",
 )
 
 LATENT_COLUMNS: tuple[str, ...] = (
@@ -75,25 +89,35 @@ class SyntheticConfig:
     :param n_rfqs: Target number of RFQ rows to generate.
     :param n_bonds: Number of bonds in the simulated market.
     :param n_issuers: Number of issuers in the simulated market.
+    :param n_clients: Number of clients sending RFQs; each sends many RFQs.
     :param trading_days: Number of business days spanned by the simulation.
     :param student_t_df: Degrees of freedom for heavy-tailed innovations.
     :param win_intercept: Logistic intercept for the win model.
     :param win_aggressiveness_coef: Logistic coefficient on normalized aggressiveness.
     :param win_information_coef: Logistic coefficient on hidden client information.
+    :param win_dealer_coef: Win-logit penalty per dealer above the typical panel.
     :param activity_gamma_shape: Shape parameter for bond activity weights.
     :param activity_gamma_scale: Scale parameter for bond activity weights.
+    :param recent_window_days: Lookback window for recent move and flow features.
+    :param deadline_noise_scale: Aggressiveness noise scale for short deadlines.
+    :param axe_aggressiveness_boost: Extra dealer aggressiveness on inventory axes.
     """
 
     n_rfqs: int = 15_000
     n_bonds: int = 300
     n_issuers: int = 60
+    n_clients: int = 150
     trading_days: int = TRADING_DAYS
     student_t_df: float = STUDENT_T_DF
     win_intercept: float = -1.05
     win_aggressiveness_coef: float = 1.8
     win_information_coef: float = 0.8
+    win_dealer_coef: float = 0.28
     activity_gamma_shape: float = 0.55
     activity_gamma_scale: float = 28.0
+    recent_window_days: int = 5
+    deadline_noise_scale: float = 0.22
+    axe_aggressiveness_boost: float = 0.35
 
 
 @dataclass(frozen=True)
@@ -171,7 +195,7 @@ class SyntheticBookSpec:
 
 @dataclass(frozen=True)
 class MarketStructure:
-    """Static issuer and bond objects used to simulate RFQs."""
+    """Static issuer, bond, client, and regime objects used to simulate RFQs."""
 
     issuer_ids: np.ndarray
     issuer_sectors: np.ndarray
@@ -186,6 +210,13 @@ class MarketStructure:
     bond_value_effect: np.ndarray
     bond_liquidity_adj: np.ndarray
     bond_activity_weight: np.ndarray
+    bond_age_at_start_days: np.ndarray
+    client_ids: np.ndarray
+    client_tier: np.ndarray
+    client_information_shift: np.ndarray
+    client_aggressiveness_bias: np.ndarray
+    client_activity_weight: np.ndarray
+    regime_daily: np.ndarray
     cp_plus_daily: np.ndarray
     market_signal_daily: np.ndarray
 
@@ -246,14 +277,39 @@ def validate_synthetic_data(df: pd.DataFrame) -> dict[str, Any]:
 
     overall_win_rate = float(df["won"].mean())
     side_win_rates = df.groupby("side")["won"].mean().to_dict()
+    client_counts = df.groupby("client_id").size()
+    dealer_win_correlation = float(
+        df["number_of_dealers"].astype(float).corr(df["won"].astype(float))
+    )
+    log_staleness = np.log1p(df["time_since_last_trade_seconds"] / SECONDS_PER_DAY)
+    staleness_width_correlation = float(log_staleness.corr(df["market_width"]))
+    axe_aggressiveness_gap = float(
+        aggressiveness.loc[df["is_inventory_axe"]].mean()
+        - aggressiveness.loc[~df["is_inventory_axe"]].mean()
+    )
+    volatile_width = float(df.loc[df["regime"] == "volatile", "market_width"].mean())
+    calm_width = float(df.loc[df["regime"] == "calm", "market_width"].mean())
+    volatile_markout = float(
+        np.abs(
+            df.loc[df["regime"] == "volatile", "y5"]
+            - df.loc[df["regime"] == "volatile", "cp_plus"]
+        ).mean()
+    )
+    calm_markout = float(
+        np.abs(
+            df.loc[df["regime"] == "calm", "y5"] - df.loc[df["regime"] == "calm", "cp_plus"]
+        ).mean()
+    )
     return {
         "n_rfqs": int(len(df)),
         "n_bonds": int(df["bond_id"].nunique()),
         "n_issuers": int(df["issuer_id"].nunique()),
+        "n_clients": int(df["client_id"].nunique()),
         "overall_win_rate": overall_win_rate,
         "win_rate_by_side": {str(key): float(value) for key, value in side_win_rates.items()},
         "median_rfqs_per_bond": float(bond_counts.median()),
         "median_fills_per_bond": float(fill_counts.median()) if not fill_counts.empty else 0.0,
+        "median_rfqs_per_client": float(client_counts.median()),
         "aggressiveness_win_correlation": float(aggressiveness.corr(df["won"].astype(float))),
         "cp_plus_mae_vs_y5": float(cp_plus_error.mean()),
         "internal_mid_mae_vs_y5": float(internal_error.mean()),
@@ -265,7 +321,30 @@ def validate_synthetic_data(df: pd.DataFrame) -> dict[str, Any]:
         "aggressiveness_bucket_win_rates_monotone": bool(monotonic_buckets),
         "win_rate_in_target_band": bool(0.20 <= overall_win_rate <= 0.50),
         "bond_activity_sparse": bool(bond_counts.median() <= 80.0 and bond_counts.max() >= 100.0),
+        "dealer_win_correlation": dealer_win_correlation,
+        "more_dealers_reduce_win_probability": bool(dealer_win_correlation < 0.0),
+        "staleness_width_correlation": staleness_width_correlation,
+        "stale_bonds_have_wider_markets": bool(staleness_width_correlation > 0.0),
+        "axe_aggressiveness_gap": axe_aggressiveness_gap,
+        "axes_quote_more_aggressively": bool(axe_aggressiveness_gap > 0.0),
+        "volatile_vs_calm_width_ratio": _safe_ratio(volatile_width, calm_width),
+        "volatile_vs_calm_markout_ratio": _safe_ratio(volatile_markout, calm_markout),
     }
+
+
+def _safe_ratio(numerator: float, denominator: float) -> float:
+    """Divide safely, returning NaN when either regime slice is empty.
+
+    :param numerator: Ratio numerator.
+    :param denominator: Ratio denominator.
+    :return: Finite ratio, or NaN when inputs are missing or non-positive.
+    """
+
+    if not math.isfinite(numerator) or not math.isfinite(denominator):
+        return float("nan")
+    if denominator <= 0.0:
+        return float("nan")
+    return numerator / denominator
 
 
 def demo_book_spec() -> SyntheticBookSpec:
@@ -341,8 +420,12 @@ def _validate_config(config: SyntheticConfig) -> None:
         raise ValueError("n_bonds must be at least 1")
     if config.n_issuers < 1:
         raise ValueError("n_issuers must be at least 1")
+    if config.n_clients < 1:
+        raise ValueError("n_clients must be at least 1")
     if config.trading_days < 5:
         raise ValueError("trading_days must be at least 5")
+    if config.recent_window_days < 1:
+        raise ValueError("recent_window_days must be at least 1")
 
 
 def _build_market_structure(rng: np.random.Generator, config: SyntheticConfig) -> MarketStructure:
@@ -366,6 +449,23 @@ def _build_market_structure(rng: np.random.Generator, config: SyntheticConfig) -
         size=config.n_bonds,
     )
     bond_activity_weight = raw_activity / raw_activity.sum()
+    # Age from one month to roughly ten years past issuance at simulation start.
+    bond_age_at_start_days = rng.integers(30, 3_600, size=config.n_bonds).astype(float)
+
+    client_ids = np.array([f"client-{index:04d}" for index in range(config.n_clients)])
+    client_tier = rng.choice(
+        np.array(CLIENT_TIERS),
+        size=config.n_clients,
+        p=np.array([0.45, 0.40, 0.15]),
+    )
+    # Within-tier heterogeneity: individual clients deviate from tier averages
+    # in both how informed they are and how aggressively they push dealers.
+    client_information_shift = rng.normal(0.0, 0.15, size=config.n_clients)
+    client_aggressiveness_bias = rng.normal(0.0, 0.20, size=config.n_clients)
+    raw_client_activity = rng.gamma(0.8, 10.0, size=config.n_clients)
+    client_activity_weight = raw_client_activity / raw_client_activity.sum()
+
+    regime_daily = _simulate_regime_path(rng, config.trading_days)
 
     cp_plus_daily, market_signal_daily, issuer_signal_daily = _simulate_cp_plus_paths(
         rng=rng,
@@ -388,9 +488,38 @@ def _build_market_structure(rng: np.random.Generator, config: SyntheticConfig) -
         bond_value_effect=bond_value_effect,
         bond_liquidity_adj=bond_liquidity_adj,
         bond_activity_weight=bond_activity_weight,
+        bond_age_at_start_days=bond_age_at_start_days,
+        client_ids=client_ids,
+        client_tier=client_tier,
+        client_information_shift=client_information_shift,
+        client_aggressiveness_bias=client_aggressiveness_bias,
+        client_activity_weight=client_activity_weight,
+        regime_daily=regime_daily,
         cp_plus_daily=cp_plus_daily,
         market_signal_daily=market_signal_daily,
     )
+
+
+def _simulate_regime_path(rng: np.random.Generator, days: int) -> np.ndarray:
+    """Simulate a persistent daily volatility regime via a Markov chain.
+
+    :param rng: Seeded numpy Generator.
+    :param days: Number of trading days to simulate.
+    :return: Regime label per day.
+    """
+
+    transition_by_regime = {
+        "calm": np.array([0.90, 0.10, 0.00]),
+        "normal": np.array([0.06, 0.88, 0.06]),
+        "volatile": np.array([0.00, 0.15, 0.85]),
+    }
+    regimes = np.empty(days, dtype=object)
+    current = "normal"
+    for day in range(days):
+        regimes[day] = current
+        probabilities = transition_by_regime[current]
+        current = REGIMES[int(rng.choice(3, p=probabilities))]
+    return regimes.astype(str)
 
 
 def _simulate_cp_plus_paths(
@@ -433,11 +562,21 @@ def _build_rfq_state(
 ) -> dict[str, np.ndarray]:
     bond_idx = _sample_bond_indices(rng, config, market.bond_activity_weight)
     day_idx = rng.integers(0, config.trading_days, size=config.n_rfqs)
-    order = np.argsort(day_idx, kind="stable")
+    # Intra-day arrival between 08:00 and 17:00 so staleness features carry
+    # information at second resolution rather than only at day resolution.
+    second_of_day = rng.integers(8 * 3_600, 17 * 3_600, size=config.n_rfqs)
+    order = np.lexsort((second_of_day, day_idx))
     bond_idx = bond_idx[order]
     day_idx = day_idx[order]
+    second_of_day = second_of_day[order]
 
     issuer_idx = market.bond_issuer_idx[bond_idx]
+    client_idx = rng.choice(
+        config.n_clients,
+        size=config.n_rfqs,
+        replace=True,
+        p=market.client_activity_weight,
+    )
     side_is_dealer_buy = rng.random(config.n_rfqs) < 0.5
     side_sign = np.where(side_is_dealer_buy, 1, -1)
     side_label = np.where(side_is_dealer_buy, "dealer_buy", "dealer_sell")
@@ -451,16 +590,58 @@ def _build_rfq_state(
     size = rng.lognormal(mean=math.log(2_000.0), sigma=0.55, size=config.n_rfqs)
     volatility = rng.lognormal(mean=math.log(0.18), sigma=0.35, size=config.n_rfqs)
     inventory = rng.normal(0.0, 900.0, size=config.n_rfqs)
-    client_tier = rng.choice(
-        np.array(CLIENT_TIERS),
+    client_tier = market.client_tier[client_idx]
+    regime = market.regime_daily[day_idx]
+
+    venue = rng.choice(
+        np.array(VENUES),
         size=config.n_rfqs,
         p=np.array([0.45, 0.40, 0.15]),
     )
-    regime = rng.choice(
-        np.array(REGIMES),
-        size=config.n_rfqs,
-        p=np.array([0.25, 0.55, 0.20]),
+    # Larger venues and liquid bonds attract wider dealer panels.
+    venue_panel_base = np.select(
+        [venue == "tradeweb", venue == "marketaxess"],
+        [4.0, 3.5],
+        default=3.0,
     )
+    dealer_intensity = venue_panel_base + 2.0 * liquidity_score
+    number_of_dealers = np.clip(1 + rng.poisson(dealer_intensity), 2, 12)
+
+    deadline_regime_factor = np.select(
+        [regime == "calm", regime == "volatile"],
+        [1.20, 0.70],
+        default=1.0,
+    )
+    quote_deadline_ms = np.clip(
+        rng.lognormal(mean=math.log(45_000.0), sigma=0.8, size=config.n_rfqs)
+        * deadline_regime_factor,
+        3_000.0,
+        300_000.0,
+    )
+
+    bond_age_days = market.bond_age_at_start_days[bond_idx] + day_idx.astype(float)
+    timestamp_seconds = day_idx.astype(np.int64) * SECONDS_PER_DAY + second_of_day
+    time_since_last_trade_seconds, recent_trade_count = _bond_flow_history(
+        bond_idx=bond_idx,
+        timestamp_seconds=timestamp_seconds,
+        window_seconds=config.recent_window_days * SECONDS_PER_DAY,
+    )
+
+    window = config.recent_window_days
+    previous_day = np.maximum(day_idx - window, 0)
+    recent_market_move = (
+        market.market_signal_daily[day_idx] - market.market_signal_daily[previous_day]
+    )
+    recent_issuer_move = (
+        market.issuer_signal_daily[issuer_idx, day_idx]
+        - market.issuer_signal_daily[issuer_idx, previous_day]
+    )
+
+    # Axes concentrate on RFQs that reduce absolute dealer inventory.
+    inventory_delta = np.where(side_sign > 0, size, -size)
+    reduces_inventory = np.abs(inventory + inventory_delta) < np.abs(inventory)
+    axe_probability = np.where(reduces_inventory, 0.30, 0.05)
+    is_inventory_axe = rng.random(config.n_rfqs) < axe_probability
 
     rating_bucket = market.issuer_ratings[issuer_idx]
     is_hy = np.isin(rating_bucket, np.array(["BB", "HY"]))
@@ -469,6 +650,8 @@ def _build_rfq_state(
         [0.85, 1.00, 1.35],
         default=1.0,
     )
+    staleness_term = 0.03 * np.log1p(time_since_last_trade_seconds / SECONDS_PER_DAY)
+    age_term = 0.015 * np.log1p(bond_age_days / 365.0)
     market_width = (
         market.issuer_spread[issuer_idx]
         + market.bond_liquidity_adj[bond_idx]
@@ -476,10 +659,12 @@ def _build_rfq_state(
         + 0.05 * np.log1p(size / 1_000.0)
         + 0.10 * volatility
         + 0.04 * is_hy.astype(float)
+        + staleness_term
+        + age_term
     )
     market_width = np.clip(market_width * regime_multiplier, 0.08, 1.50)
 
-    timestamps = pd.to_datetime("2025-01-01") + pd.to_timedelta(day_idx, unit="D")
+    timestamps = pd.to_datetime("2025-01-01") + pd.to_timedelta(timestamp_seconds, unit="s")
     rfq_ids = np.array([f"rfq-{index:06d}" for index in range(config.n_rfqs)])
 
     return {
@@ -487,8 +672,11 @@ def _build_rfq_state(
         "timestamp": timestamps.to_numpy(),
         "bond_idx": bond_idx,
         "issuer_idx": issuer_idx,
+        "client_idx": client_idx,
         "bond_id": market.bond_ids[bond_idx],
         "issuer_id": market.issuer_ids[issuer_idx],
+        "client_id": market.client_ids[client_idx],
+        "venue": venue,
         "sector": market.issuer_sectors[issuer_idx],
         "rating_bucket": rating_bucket,
         "client_tier": client_tier,
@@ -501,7 +689,45 @@ def _build_rfq_state(
         "market_width": market_width,
         "volatility": volatility,
         "inventory": inventory,
+        "number_of_dealers": number_of_dealers.astype(int),
+        "quote_deadline_ms": quote_deadline_ms,
+        "bond_age_days": bond_age_days,
+        "time_since_last_trade_seconds": time_since_last_trade_seconds,
+        "recent_trade_count": recent_trade_count,
+        "recent_market_move": recent_market_move,
+        "recent_issuer_move": recent_issuer_move,
+        "is_inventory_axe": is_inventory_axe,
     }
+
+
+def _bond_flow_history(
+    bond_idx: np.ndarray,
+    timestamp_seconds: np.ndarray,
+    window_seconds: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute point-in-time staleness and recent flow per bond.
+
+    Both outputs use strictly prior RFQs on the same bond, so they are safe
+    to expose to models at quote time.
+
+    :param bond_idx: Bond index per RFQ in chronological order.
+    :param timestamp_seconds: RFQ arrival time in seconds, chronological.
+    :param window_seconds: Trailing window for the recent trade count.
+    :return: Seconds since previous same-bond RFQ, and prior-window RFQ count.
+    """
+
+    n_rfqs = len(bond_idx)
+    time_since = np.full(n_rfqs, FIRST_TRADE_STALENESS_SECONDS, dtype=float)
+    recent_count = np.zeros(n_rfqs, dtype=int)
+    frame = pd.DataFrame({"bond": bond_idx, "time": timestamp_seconds})
+    for _, group in frame.groupby("bond", sort=False):
+        positions = group.index.to_numpy()
+        times = group["time"].to_numpy()
+        if len(times) > 1:
+            time_since[positions[1:]] = (times[1:] - times[:-1]).astype(float)
+        window_start = np.searchsorted(times, times - window_seconds, side="left")
+        recent_count[positions] = np.arange(len(times)) - window_start
+    return time_since, recent_count
 
 
 def _simulate_rfq_economics(
@@ -531,9 +757,20 @@ def _simulate_rfq_economics(
         + 0.05 * (0.5 - rfq_state["liquidity_score"])
         + 0.10 * market_signal
         + 0.08 * issuer_signal
+        + 0.05 * rfq_state["recent_market_move"]
+        + 0.04 * rfq_state["recent_issuer_move"]
     )
 
-    future_noise = _student_t_draw(rng, config.n_rfqs, config.student_t_df, scale=0.20)
+    # Volatile regimes carry heavier markout tails, not only wider quoted markets.
+    markout_scale = np.select(
+        [regime == "calm", regime == "volatile"],
+        [0.85, 1.35],
+        default=1.0,
+    )
+    future_noise = (
+        _student_t_draw(rng, config.n_rfqs, config.student_t_df, scale=0.20)
+        * markout_scale
+    )
     future_residual = mu_value + future_noise
     y5 = cp_plus + future_residual
 
@@ -547,7 +784,7 @@ def _simulate_rfq_economics(
     internal_signal = mu_value + partially_informative_signal + regime_bias + internal_noise
     internal_mid = cp_plus + internal_signal
 
-    info_strength = _information_strength(rfq_state)
+    info_strength = _information_strength(rfq_state, market)
     client_information = info_strength * future_residual + rng.normal(0.0, 0.05, size=config.n_rfqs)
     standardized_client_information = _standardize(client_information)
 
@@ -566,26 +803,42 @@ def _simulate_rfq_economics(
         default=0.0,
     )
 
+    # Short deadlines force the desk to quote under time pressure, adding noise
+    # to the historical aggressiveness that models must learn through.
+    deadline_pressure = np.sqrt(30_000.0 / rfq_state["quote_deadline_ms"])
+    deadline_noise = (
+        rng.normal(0.0, 1.0, size=config.n_rfqs)
+        * config.deadline_noise_scale
+        * deadline_pressure
+    )
+    client_bias = market.client_aggressiveness_bias[rfq_state["client_idx"]]
+    axe_boost = config.axe_aggressiveness_boost * rfq_state["is_inventory_axe"].astype(float)
+
     base_aggressiveness = rng.normal(-0.1, 0.7, size=config.n_rfqs)
     aggressiveness = (
         base_aggressiveness
         + 0.18 * standardized_internal_alpha
         - 0.10 * standardized_inventory
         + tier_effect
+        + client_bias
         - 0.08 * standardized_log_size
         + 0.06 * (rfq_state["liquidity_score"] - 0.5)
+        + axe_boost
+        + deadline_noise
     )
-    aggressiveness = np.clip(aggressiveness, -2.0, 2.0)
+    aggressiveness = np.clip(aggressiveness, -2.2, 2.2)
 
     quote = cp_plus + rfq_state["side_sign"] * aggressiveness * rfq_state["market_width"]
 
     # Hidden-information term uses -beta * side_sign * client_information so informed
     # clients trade against the dealer: sellers arrive when future value is lower on
     # dealer-buy RFQs, and buyers arrive when future value is higher on dealer-sell RFQs.
+    typical_panel_size = 4.0
     logit_p_win = (
         config.win_intercept
         + config.win_aggressiveness_coef * aggressiveness
         - config.win_information_coef * rfq_state["side_sign"] * standardized_client_information
+        - config.win_dealer_coef * (rfq_state["number_of_dealers"].astype(float) - typical_panel_size)
         + tier_effect
         + 0.30 * rfq_state["liquidity_score"]
         - 0.15 * standardized_log_size
@@ -621,6 +874,8 @@ def _assemble_output_frame(
             "timestamp": rfq_state["timestamp"],
             "bond_id": rfq_state["bond_id"],
             "issuer_id": rfq_state["issuer_id"],
+            "client_id": rfq_state["client_id"],
+            "venue": rfq_state["venue"],
             "sector": rfq_state["sector"],
             "rating_bucket": rfq_state["rating_bucket"],
             "client_tier": rfq_state["client_tier"],
@@ -639,6 +894,14 @@ def _assemble_output_frame(
             "inventory": rfq_state["inventory"],
             "market_signal": economics["market_signal"],
             "issuer_signal": economics["issuer_signal"],
+            "number_of_dealers": rfq_state["number_of_dealers"],
+            "quote_deadline_ms": rfq_state["quote_deadline_ms"],
+            "bond_age_days": rfq_state["bond_age_days"],
+            "time_since_last_trade_seconds": rfq_state["time_since_last_trade_seconds"],
+            "recent_trade_count": rfq_state["recent_trade_count"],
+            "recent_market_move": rfq_state["recent_market_move"],
+            "recent_issuer_move": rfq_state["recent_issuer_move"],
+            "is_inventory_axe": rfq_state["is_inventory_axe"],
         }
     )
     if include_latent:
@@ -674,7 +937,10 @@ def _sample_bond_indices(
     return rng.choice(n_bonds, size=config.n_rfqs, replace=False, p=activity_weight)
 
 
-def _information_strength(rfq_state: dict[str, np.ndarray]) -> np.ndarray:
+def _information_strength(
+    rfq_state: dict[str, np.ndarray],
+    market: MarketStructure,
+) -> np.ndarray:
     tier_boost = np.select(
         [rfq_state["client_tier"] == "retail", rfq_state["client_tier"] == "professional"],
         [0.35, 0.55],
@@ -683,7 +949,9 @@ def _information_strength(rfq_state: dict[str, np.ndarray]) -> np.ndarray:
     hy_boost = np.isin(rfq_state["rating_bucket"], np.array(["BB", "HY"])).astype(float) * 0.15
     illiquid_boost = (0.5 - rfq_state["liquidity_score"]) * 0.25
     volatile_boost = (rfq_state["regime"] == "volatile").astype(float) * 0.10
-    return tier_boost + hy_boost + illiquid_boost + volatile_boost
+    client_shift = market.client_information_shift[rfq_state["client_idx"]]
+    strength = tier_boost + hy_boost + illiquid_boost + volatile_boost + client_shift
+    return np.clip(strength, 0.05, None)
 
 
 def _row_to_synthetic_rfq(row: pd.Series) -> SyntheticRfq:

@@ -173,3 +173,75 @@ def test_validation_summary_for_default_seed() -> None:
     assert summary["win_rate_in_target_band"]
     assert summary["internal_mid_more_informative_than_cp_plus"]
     assert summary["mean_selection_wins"] > 0.0
+
+
+def test_more_dealers_reduce_win_probability() -> None:
+    frame = make_synthetic_rfqs(config=_small_config(), random_state=42)
+    win_by_dealers = frame.groupby("number_of_dealers")["won"].mean()
+    correlation = frame["number_of_dealers"].astype(float).corr(frame["won"].astype(float))
+    assert correlation < 0.0
+    assert win_by_dealers.iloc[0] > win_by_dealers.iloc[-1]
+
+
+def test_stale_bonds_have_wider_markets() -> None:
+    frame = make_synthetic_rfqs(config=_small_config(), random_state=42)
+    log_staleness = np.log1p(frame["time_since_last_trade_seconds"] / 86_400.0)
+    assert float(log_staleness.corr(frame["market_width"])) > 0.0
+
+
+def test_inventory_axes_quote_more_aggressively() -> None:
+    frame = make_synthetic_rfqs(config=_small_config(), random_state=42)
+    aggressiveness = frame["side_sign"] * (frame["quote"] - frame["cp_plus"]) / frame["market_width"]
+    axe_mean = float(aggressiveness.loc[frame["is_inventory_axe"]].mean())
+    other_mean = float(aggressiveness.loc[~frame["is_inventory_axe"]].mean())
+    assert axe_mean > other_mean
+
+
+def test_clients_send_multiple_rfqs() -> None:
+    frame = make_synthetic_rfqs(config=_small_config(), random_state=42)
+    counts = frame.groupby("client_id").size()
+    assert counts.median() >= 3.0
+
+
+def test_bonds_receive_multiple_rfqs_for_pooling() -> None:
+    frame = make_synthetic_rfqs(config=_small_config(), random_state=42)
+    counts = frame.groupby("bond_id").size()
+    assert counts.median() >= 3.0
+
+
+def test_volatile_regime_widens_markets_and_markouts() -> None:
+    frame = make_synthetic_rfqs(config=_small_config(), random_state=42)
+    volatile = frame.loc[frame["regime"] == "volatile"]
+    calm = frame.loc[frame["regime"] == "calm"]
+    assert not volatile.empty and not calm.empty
+    assert volatile["market_width"].mean() > calm["market_width"].mean()
+    volatile_markout = np.abs(volatile["y5"] - volatile["cp_plus"]).mean()
+    calm_markout = np.abs(calm["y5"] - calm["cp_plus"]).mean()
+    assert volatile_markout > calm_markout
+
+
+def test_regime_is_constant_within_a_day() -> None:
+    frame = make_synthetic_rfqs(config=_small_config(), random_state=42)
+    day = pd.to_datetime(frame["timestamp"]).dt.date
+    regimes_per_day = frame.groupby(day)["regime"].nunique()
+    assert (regimes_per_day == 1).all()
+
+
+def test_new_observable_fields_have_valid_ranges() -> None:
+    frame = make_synthetic_rfqs(config=_small_config(), random_state=42)
+    assert (frame["number_of_dealers"] >= 2).all()
+    assert (frame["quote_deadline_ms"] > 0.0).all()
+    assert (frame["bond_age_days"] >= 0.0).all()
+    assert (frame["time_since_last_trade_seconds"] >= 0.0).all()
+    assert (frame["recent_trade_count"] >= 0).all()
+    assert frame["is_inventory_axe"].dtype == bool
+    assert set(frame["venue"].unique()).issubset({"tradeweb", "marketaxess", "bloomberg_rfq"})
+
+
+def test_time_since_last_trade_matches_bond_history() -> None:
+    frame = make_synthetic_rfqs(config=_small_config(), random_state=42)
+    one_bond = frame.loc[frame["bond_id"] == frame["bond_id"].mode().iloc[0]]
+    ordered = one_bond.sort_values("timestamp")
+    gaps = pd.to_datetime(ordered["timestamp"]).diff().dt.total_seconds().dropna()
+    reported = ordered["time_since_last_trade_seconds"].iloc[1:]
+    np.testing.assert_allclose(reported.to_numpy(), gaps.to_numpy(), rtol=1e-9)

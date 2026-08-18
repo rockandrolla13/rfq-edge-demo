@@ -109,8 +109,11 @@ class OptimizerConfig:
     :param hedge_horizon_years: Expected hedge horizon used in cost calculation.
     :param transaction_bps: Quote-independent transaction cost in bps of mid.
     :param risk_aversion: Scales volatility and hedge-horizon risk cost.
+    :param deadline_cost_bps: Hedging slippage per unit of deadline pressure.
     :param inventory_value_per_unit: Price-point value per unit of inventory reduced.
     :param inventory_penalty_per_unit: Price-point penalty per unit of inventory added.
+    :param axe_bonus_multiplier: Extra inventory value multiplier on axed RFQs.
+    :param support_quantile: Tail quantile trimmed from the trained quote support.
     """
 
     min_aggressiveness: float = -1.5
@@ -119,8 +122,11 @@ class OptimizerConfig:
     hedge_horizon_years: float = 5.0 / 252.0
     transaction_bps: float = 0.8
     risk_aversion: float = 8.0
+    deadline_cost_bps: float = 0.3
     inventory_value_per_unit: float = 0.000015
     inventory_penalty_per_unit: float = 0.000015
+    axe_bonus_multiplier: float = 0.5
+    support_quantile: float = 0.01
 
     def __post_init__(self) -> None:
         if self.max_aggressiveness <= self.min_aggressiveness:
@@ -133,7 +139,13 @@ class OptimizerConfig:
             raise ValueError("transaction_bps must be non-negative")
         if self.risk_aversion < 0.0:
             raise ValueError("risk_aversion must be non-negative")
+        if self.deadline_cost_bps < 0.0:
+            raise ValueError("deadline_cost_bps must be non-negative")
         if self.inventory_value_per_unit < 0.0:
             raise ValueError("inventory_value_per_unit must be non-negative")
         if self.inventory_penalty_per_unit < 0.0:
             raise ValueError("inventory_penalty_per_unit must be non-negative")
+        if self.axe_bonus_multiplier < 0.0:
+            raise ValueError("axe_bonus_multiplier must be non-negative")
+        if not 0.0 <= self.support_quantile < 0.5:
+            raise ValueError("support_quantile must be in [0, 0.5)")

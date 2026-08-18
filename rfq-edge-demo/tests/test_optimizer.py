@@ -58,9 +58,38 @@ def test_evaluate_quote_grid_has_required_columns() -> None:
         "clean_edge_cents",
         "cost_cents",
         "expected_value_cents",
+        "in_support",
     }
     assert required.issubset(table.columns)
     assert len(table) >= 3
+
+
+def test_quote_grid_flags_unsupported_candidates() -> None:
+    prepared, models = _prepared_models()
+    rfq = prepared.iloc[[100]]
+    wide_grid = OptimizerConfig(
+        min_aggressiveness=-6.0,
+        max_aggressiveness=6.0,
+        aggressiveness_step=1.0,
+    )
+    table = evaluate_quote_grid(rfq, models, wide_grid)
+    assert not table["in_support"].all()
+    assert table["in_support"].any()
+
+
+def test_optimizer_only_selects_supported_quotes() -> None:
+    prepared, models = _prepared_models()
+    rfq = prepared.iloc[[100]]
+    wide_grid = OptimizerConfig(
+        min_aggressiveness=-6.0,
+        max_aggressiveness=6.0,
+        aggressiveness_step=1.0,
+    )
+    decision = optimize_quote(rfq, models, wide_grid)
+    if decision.accepted:
+        table = decision.candidate_table
+        chosen = table.loc[table["quote"] == decision.quote]
+        assert chosen["in_support"].all()
 
 
 def test_higher_aggressiveness_raises_win_probability_in_grid() -> None:

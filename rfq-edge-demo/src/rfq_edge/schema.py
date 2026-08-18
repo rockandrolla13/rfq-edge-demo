@@ -63,6 +63,21 @@ def validate_rfq_schema(df: pd.DataFrame) -> None:
     if not won_values.issubset({True, False, 0, 1}):
         raise ValueError("won must be binary")
 
+    axe_values = set(df["is_inventory_axe"].unique())
+    if not axe_values.issubset({True, False, 0, 1}):
+        raise ValueError("is_inventory_axe must be binary")
+
+    if (df["number_of_dealers"] < 1).any():
+        raise ValueError("number_of_dealers must be at least 1")
+    if (df["quote_deadline_ms"] <= 0.0).any():
+        raise ValueError("quote_deadline_ms must be strictly positive")
+    if (df["bond_age_days"] < 0.0).any():
+        raise ValueError("bond_age_days must be non-negative")
+    if (df["time_since_last_trade_seconds"] < 0.0).any():
+        raise ValueError("time_since_last_trade_seconds must be non-negative")
+    if (df["recent_trade_count"] < 0).any():
+        raise ValueError("recent_trade_count must be non-negative")
+
     for column in PRICE_COLUMNS:
         if not pd.api.types.is_numeric_dtype(df[column]):
             raise ValueError(f"{column} must be numeric")

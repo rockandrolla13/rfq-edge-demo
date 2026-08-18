@@ -24,6 +24,9 @@ from rfq_edge.features import (
 from rfq_edge.splits import ChronologicalSplit, chronological_train_test_split
 
 
+SUPPORT_TAIL_QUANTILE = 0.01
+
+
 @dataclass(frozen=True)
 class FittedFillModel:
     """Chronologically fitted logistic win-probability model.
@@ -31,11 +34,14 @@ class FittedFillModel:
     :param pipeline: Preprocessing and logistic-regression pipeline.
     :param config: Configuration used during fitting.
     :param selected_c: Inverse regularization chosen by chronological CV.
+    :param aggressiveness_support: Trained aggressiveness range with tail
+        quantiles trimmed; predictions outside it are extrapolations.
     """
 
     pipeline: Pipeline
     config: FillModelConfig
     selected_c: float
+    aggressiveness_support: tuple[float, float]
 
 
 def fit_fill_model(
@@ -46,7 +52,7 @@ def fit_fill_model(
 
     :param train_df: Chronological training dataframe with observed outcomes.
     :param config: Fill-model configuration.
-    :return: Fitted preprocessing and logistic pipeline.
+    :return: Fitted preprocessing and logistic pipeline with quote support.
     """
 
     model_config = config or FillModelConfig()
@@ -56,10 +62,16 @@ def fit_fill_model(
     pipeline = _build_logistic_pipeline(model_config)
     pipeline.fit(features, target)
     selected_c = float(pipeline.named_steps["model"].C_[0])
+    trained_aggressiveness = features["aggressiveness"]
+    support = (
+        float(trained_aggressiveness.quantile(SUPPORT_TAIL_QUANTILE)),
+        float(trained_aggressiveness.quantile(1.0 - SUPPORT_TAIL_QUANTILE)),
+    )
     return FittedFillModel(
         pipeline=pipeline,
         config=model_config,
         selected_c=selected_c,
+        aggressiveness_support=support,
     )
 
 

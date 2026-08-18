@@ -1,4 +1,11 @@
-"""Point-in-time feature construction for RFQ responder models."""
+"""Point-in-time feature contracts for RFQ responder models.
+
+Each model consumes an explicit allowlist. The value model V0 must never see
+the quote, quote-derived features, or outcomes. Fill and selection models see
+the quote only through :func:`make_candidate_quote_features`, which recomputes
+quote-dependent features for every candidate price. No model may see latent
+simulator columns.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +18,8 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+QUOTE_DEPENDENT_FEATURES: tuple[str, ...] = ("aggressiveness",)
+
 VALUE_NUMERIC_FEATURES: tuple[str, ...] = (
     "internal_alpha",
     "log_size",
@@ -20,6 +29,11 @@ VALUE_NUMERIC_FEATURES: tuple[str, ...] = (
     "inventory",
     "market_signal",
     "issuer_signal",
+    "log_bond_age",
+    "log_staleness",
+    "recent_trade_count",
+    "recent_market_move",
+    "recent_issuer_move",
     "day_of_year",
     "month",
     "day_of_week",
@@ -39,13 +53,20 @@ VALUE_FEATURE_COLUMNS: tuple[str, ...] = VALUE_NUMERIC_FEATURES + VALUE_CATEGORI
 
 FILL_NUMERIC_FEATURES: tuple[str, ...] = (
     "aggressiveness",
+    "number_of_dealers",
+    "log_quote_deadline",
     "log_size",
     "liquidity_score",
     "log_market_width",
     "log_volatility",
     "inventory",
+    "is_inventory_axe",
     "market_signal",
     "issuer_signal",
+    "log_staleness",
+    "recent_trade_count",
+    "recent_market_move",
+    "recent_issuer_move",
     "day_of_year",
     "month",
     "day_of_week",
@@ -59,13 +80,59 @@ FILL_CATEGORICAL_FEATURES: tuple[str, ...] = (
     "regime",
     "issuer_id",
     "bond_id",
+    "client_id",
+    "venue",
 )
 
 FILL_FEATURE_COLUMNS: tuple[str, ...] = FILL_NUMERIC_FEATURES + FILL_CATEGORICAL_FEATURES
 
-SELECTION_NUMERIC_FEATURES: tuple[str, ...] = FILL_NUMERIC_FEATURES
-SELECTION_CATEGORICAL_FEATURES: tuple[str, ...] = FILL_CATEGORICAL_FEATURES
-SELECTION_FEATURE_COLUMNS: tuple[str, ...] = FILL_FEATURE_COLUMNS
+SELECTION_NUMERIC_FEATURES: tuple[str, ...] = (
+    "aggressiveness",
+    "number_of_dealers",
+    "log_size",
+    "liquidity_score",
+    "log_market_width",
+    "log_volatility",
+    "is_inventory_axe",
+    "log_staleness",
+    "recent_market_move",
+    "recent_issuer_move",
+    "day_of_year",
+    "month",
+    "day_of_week",
+)
+
+SELECTION_CATEGORICAL_FEATURES: tuple[str, ...] = (
+    "side",
+    "sector",
+    "rating_bucket",
+    "client_tier",
+    "regime",
+    "issuer_id",
+    "bond_id",
+    "client_id",
+    "venue",
+)
+
+SELECTION_FEATURE_COLUMNS: tuple[str, ...] = (
+    SELECTION_NUMERIC_FEATURES + SELECTION_CATEGORICAL_FEATURES
+)
+
+COST_FEATURE_COLUMNS: tuple[str, ...] = (
+    "cp_plus",
+    "market_width",
+    "volatility",
+    "size",
+    "liquidity_score",
+    "quote_deadline_ms",
+)
+
+INVENTORY_FEATURE_COLUMNS: tuple[str, ...] = (
+    "side",
+    "size",
+    "inventory",
+    "is_inventory_axe",
+)
 
 FORBIDDEN_OUTPUT_FEATURES: frozenset[str] = frozenset(
     {
@@ -113,11 +180,39 @@ def quote_aggressiveness(
     return side_sign.astype(float) * (quote.astype(float) - cp_plus.astype(float)) / market_width.astype(float)
 
 
+def make_candidate_quote_features(
+    df: pd.DataFrame,
+    quote: pd.Series | float,
+) -> pd.DataFrame:
+    """Recompute quote-dependent features for one candidate quote.
+
+    Every candidate price q must pass through this function so that
+    quote-dependent features are never stale when the optimizer scans a grid.
+
+    :param df: Validated RFQ dataframe.
+    :param quote: Candidate clean quote as a scalar or aligned series.
+    :return: Quote-dependent feature block aligned to ``df.index``.
+    :raises ValueError: If ``quote`` is None.
+    """
+
+    if quote is None:
+        raise ValueError("candidate quote features require an explicit quote")
+    quote_series = _as_quote_series(df, quote)
+    features = pd.DataFrame(index=df.index)
+    features["aggressiveness"] = quote_aggressiveness(
+        df["side_sign"],
+        quote_series,
+        df["cp_plus"],
+        df["market_width"],
+    )
+    return features
+
+
 def make_value_features(df: pd.DataFrame) -> pd.DataFrame:
     """Build the point-in-time feature matrix used to estimate V0.
 
-    Features are restricted to information available before a quote is chosen
-    and before the RFQ outcome is observed.
+    V0 predicts unconditional future value, so the contract excludes the
+    quote, quote-derived features, competition, and every outcome column.
 
     :param df: Validated RFQ dataframe.
     :return: Feature dataframe indexed like ``df`` with an explicit allowlist.
@@ -125,27 +220,8 @@ def make_value_features(df: pd.DataFrame) -> pd.DataFrame:
     """
 
     _assert_no_latent_columns(df)
-    timestamps = pd.to_datetime(df["timestamp"])
-    features = pd.DataFrame(index=df.index)
-    features["internal_alpha"] = df["internal_mid"] - df["cp_plus"]
-    features["log_size"] = np.log(df["size"])
-    features["liquidity_score"] = df["liquidity_score"]
-    features["log_market_width"] = np.log(df["market_width"])
-    features["log_volatility"] = np.log(df["volatility"])
-    features["inventory"] = df["inventory"]
-    features["market_signal"] = df["market_signal"]
-    features["issuer_signal"] = df["issuer_signal"]
-    features["day_of_year"] = timestamps.dt.dayofyear.astype(float)
-    features["month"] = timestamps.dt.month.astype(float)
-    features["day_of_week"] = timestamps.dt.dayofweek.astype(float)
-    features["side"] = df["side"].astype(str)
-    features["sector"] = df["sector"].astype(str)
-    features["rating_bucket"] = df["rating_bucket"].astype(str)
-    features["client_tier"] = df["client_tier"].astype(str)
-    features["regime"] = df["regime"].astype(str)
-    features["issuer_id"] = df["issuer_id"].astype(str)
-    features["bond_id"] = df["bond_id"].astype(str)
-    selected = features[list(VALUE_FEATURE_COLUMNS)]
+    state = _point_in_time_state_features(df)
+    selected = state[list(VALUE_FEATURE_COLUMNS)]
     _assert_feature_matrix_allowed(selected)
     return selected
 
@@ -169,43 +245,21 @@ def make_fill_features(
 ) -> pd.DataFrame:
     """Build features for p(win | q, X).
 
-    The quote enters only through normalized aggressiveness. Outcome columns
-    such as ``won`` and ``y5`` are excluded.
+    The quote enters only through the recomputed candidate-quote block.
+    Outcome columns such as ``won`` and ``y5`` are excluded.
 
     :param df: Validated RFQ dataframe.
-    :param quote: Optional counterfactual quote override.
+    :param quote: Optional counterfactual quote; defaults to the historical quote.
     :return: Feature dataframe with an explicit allowlist.
     :raises ValueError: If latent columns are present or forbidden outputs appear.
     """
 
-    frame = _frame_with_quote(df, quote)
-    _assert_no_latent_columns(frame)
-    timestamps = pd.to_datetime(frame["timestamp"])
-    features = pd.DataFrame(index=frame.index)
-    features["aggressiveness"] = quote_aggressiveness(
-        frame["side_sign"],
-        frame["quote"],
-        frame["cp_plus"],
-        frame["market_width"],
-    )
-    features["log_size"] = np.log(frame["size"])
-    features["liquidity_score"] = frame["liquidity_score"]
-    features["log_market_width"] = np.log(frame["market_width"])
-    features["log_volatility"] = np.log(frame["volatility"])
-    features["inventory"] = frame["inventory"]
-    features["market_signal"] = frame["market_signal"]
-    features["issuer_signal"] = frame["issuer_signal"]
-    features["day_of_year"] = timestamps.dt.dayofyear.astype(float)
-    features["month"] = timestamps.dt.month.astype(float)
-    features["day_of_week"] = timestamps.dt.dayofweek.astype(float)
-    features["side"] = frame["side"].astype(str)
-    features["sector"] = frame["sector"].astype(str)
-    features["rating_bucket"] = frame["rating_bucket"].astype(str)
-    features["client_tier"] = frame["client_tier"].astype(str)
-    features["regime"] = frame["regime"].astype(str)
-    features["issuer_id"] = frame["issuer_id"].astype(str)
-    features["bond_id"] = frame["bond_id"].astype(str)
-    selected = features[list(FILL_FEATURE_COLUMNS)]
+    _assert_no_latent_columns(df)
+    effective_quote = df["quote"] if quote is None else quote
+    state = _point_in_time_state_features(df)
+    quote_block = make_candidate_quote_features(df, effective_quote)
+    combined = pd.concat([state, quote_block], axis=1)
+    selected = combined[list(FILL_FEATURE_COLUMNS)]
     _assert_fill_feature_matrix_allowed(selected)
     return selected
 
@@ -216,15 +270,23 @@ def make_selection_features(
 ) -> pd.DataFrame:
     """Build features for A(q, X) on won RFQs.
 
-    Sparse bonds borrow strength from issuer and population levels through
-    pooled categorical encoding with minimum-frequency pooling.
+    Sparse bonds and clients borrow strength from issuer, tier, and population
+    levels through pooled categorical encoding with minimum-frequency pooling.
 
     :param df: RFQ dataframe, typically restricted to fills.
-    :param quote: Optional counterfactual quote override.
+    :param quote: Optional counterfactual quote; defaults to the historical quote.
     :return: Feature dataframe with an explicit allowlist.
+    :raises ValueError: If latent columns are present or forbidden outputs appear.
     """
 
-    return make_fill_features(df, quote=quote)
+    _assert_no_latent_columns(df)
+    effective_quote = df["quote"] if quote is None else quote
+    state = _point_in_time_state_features(df)
+    quote_block = make_candidate_quote_features(df, effective_quote)
+    combined = pd.concat([state, quote_block], axis=1)
+    selected = combined[list(SELECTION_FEATURE_COLUMNS)]
+    _assert_fill_feature_matrix_allowed(selected)
+    return selected
 
 
 def build_feature_preprocessor(
@@ -267,18 +329,55 @@ def build_feature_preprocessor(
     )
 
 
-def _frame_with_quote(
-    df: pd.DataFrame,
-    quote: pd.Series | float | None,
-) -> pd.DataFrame:
-    if quote is None:
-        return df
-    frame = df.copy()
+SECONDS_PER_HOUR = 3_600.0
+
+
+def _point_in_time_state_features(frame: pd.DataFrame) -> pd.DataFrame:
+    """Derive all quote-independent observable features shared by the models.
+
+    :param frame: Validated RFQ dataframe.
+    :return: Superset feature dataframe from which allowlists select columns.
+    """
+
+    timestamps = pd.to_datetime(frame["timestamp"])
+    features = pd.DataFrame(index=frame.index)
+    features["internal_alpha"] = frame["internal_mid"] - frame["cp_plus"]
+    features["log_size"] = np.log(frame["size"])
+    features["liquidity_score"] = frame["liquidity_score"]
+    features["log_market_width"] = np.log(frame["market_width"])
+    features["log_volatility"] = np.log(frame["volatility"])
+    features["inventory"] = frame["inventory"]
+    features["market_signal"] = frame["market_signal"]
+    features["issuer_signal"] = frame["issuer_signal"]
+    features["number_of_dealers"] = frame["number_of_dealers"].astype(float)
+    features["log_quote_deadline"] = np.log(frame["quote_deadline_ms"].astype(float))
+    features["is_inventory_axe"] = frame["is_inventory_axe"].astype(float)
+    features["log_bond_age"] = np.log1p(frame["bond_age_days"].astype(float))
+    features["log_staleness"] = np.log1p(
+        frame["time_since_last_trade_seconds"].astype(float) / SECONDS_PER_HOUR
+    )
+    features["recent_trade_count"] = frame["recent_trade_count"].astype(float)
+    features["recent_market_move"] = frame["recent_market_move"]
+    features["recent_issuer_move"] = frame["recent_issuer_move"]
+    features["day_of_year"] = timestamps.dt.dayofyear.astype(float)
+    features["month"] = timestamps.dt.month.astype(float)
+    features["day_of_week"] = timestamps.dt.dayofweek.astype(float)
+    features["side"] = frame["side"].astype(str)
+    features["sector"] = frame["sector"].astype(str)
+    features["rating_bucket"] = frame["rating_bucket"].astype(str)
+    features["client_tier"] = frame["client_tier"].astype(str)
+    features["regime"] = frame["regime"].astype(str)
+    features["issuer_id"] = frame["issuer_id"].astype(str)
+    features["bond_id"] = frame["bond_id"].astype(str)
+    features["client_id"] = frame["client_id"].astype(str)
+    features["venue"] = frame["venue"].astype(str)
+    return features
+
+
+def _as_quote_series(df: pd.DataFrame, quote: pd.Series | float) -> pd.Series:
     if isinstance(quote, pd.Series):
-        frame["quote"] = quote.astype(float)
-    else:
-        frame["quote"] = float(quote)
-    return frame
+        return quote.astype(float)
+    return pd.Series(float(quote), index=df.index)
 
 
 def _assert_no_latent_columns(df: pd.DataFrame) -> None:
